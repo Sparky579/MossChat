@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.5
+
+Saved providers are locked by default. Their endpoint and preset stay untouched until you choose Edit provider; new providers begin in edit mode.
+
 ## 0.2.4
 
 The sync-server Agent task can now be read in the app before copying. It detects and prefers an existing Cloudflare Tunnel, uses Docker or Caddy when needed, and treats Tailscale as the final fallback. The Tailscale path explicitly tells the user that every syncing machine must join the same tailnet and satisfy its ACLs.

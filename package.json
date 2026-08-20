@@ -2,7 +2,7 @@
   "name": "mosschat",
   "description": "Browser local chat client for your own model API keys",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",

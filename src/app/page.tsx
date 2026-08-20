@@ -596,17 +596,28 @@ function PromptDialog({ target, scope, settings, onChange, onSavePrompt, onClose
 function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersistent, onChooseAutoBackup }: { settings: AppSettings; safety: StorageSafetyStatus | null; onChange: (settings: AppSettings) => void; onClose: () => void; onRequestPersistent: () => void; onChooseAutoBackup: () => void }) {
   const copy = useCopy();
   const [tab, setTab] = useState<"models" | "behavior" | "tools" | "privacy">("models");
+  const [editingProviderIds, setEditingProviderIds] = useState<Set<ProviderId>>(() => new Set());
+  const isEditingProvider = (id: ProviderId) => editingProviderIds.has(id);
+  const setProviderEditing = (id: ProviderId, editing: boolean) => setEditingProviderIds((current) => {
+    const next = new Set(current);
+    if (editing) next.add(id);
+    else next.delete(id);
+    return next;
+  });
   const updateProvider = (id: ProviderId, field: "name" | "kind" | "apiKey" | "baseUrl" | "model", value: string) => {
+    if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
     const preset = field === "name" ? presetFromProviderName(value) : null;
     onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, [field]: value, ...(preset ? { kind: PROVIDER_PRESETS[preset].kind, baseUrl: PROVIDER_PRESETS[preset].baseUrl } : {}) } } });
   };
   const applyProviderPreset = (id: ProviderId, presetId: ProviderPresetId) => {
+    if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
     const preset = PROVIDER_PRESETS[presetId];
     onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, name: provider.name === "New provider" ? preset.name : provider.name, kind: preset.kind, baseUrl: preset.baseUrl } } });
   };
   const updateModel = (id: ProviderId, index: number, value: string) => {
+    if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
     const previous = provider.models[index];
     const models = [...provider.models];
@@ -614,10 +625,12 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models, model: provider.model === previous ? value : provider.model } } });
   };
   const addModel = (id: ProviderId) => {
+    if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
     onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models: [...provider.models, ""] } } });
   };
   const removeModel = (id: ProviderId, index: number) => {
+    if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
     if (provider.models.length <= 1) return;
     const removed = provider.models[index];
@@ -627,6 +640,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
   const addProvider = () => {
     const id = newId("provider");
     onChange({ ...settings, providers: { ...settings.providers, [id]: { name: "New provider", kind: "openai", apiKey: "", baseUrl: "", model: "", models: [""] } }, providerOrder: [id, ...settings.providerOrder] });
+    setProviderEditing(id, true);
   };
   const moveProvider = (id: ProviderId, direction: -1 | 1) => {
     const index = settings.providerOrder.indexOf(id);
@@ -650,16 +664,20 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
         {tab === "models" && <>
           <h3>{copy.apiTitle}</h3><p className="muted">{copy.apiDetail}</p>
           <div className="provider-actions"><button type="button" onClick={addProvider}>+ Add provider</button></div>
-          {orderedProviders(settings).map(([id, provider], index) => <fieldset key={id}>
-            <legend>{provider.name}</legend>
-            <div className="provider-row-actions"><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div>
-            <div className="provider-presets"><span>{settings.language === "zh" ? "端点预设" : "Endpoint preset"}</span>{(Object.keys(PROVIDER_PRESETS) as ProviderPresetId[]).map((presetId) => <button type="button" key={presetId} className={provider.baseUrl === PROVIDER_PRESETS[presetId].baseUrl ? "active" : ""} onClick={() => applyProviderPreset(id, presetId)}>{PROVIDER_PRESETS[presetId].label}</button>)}</div>
-            <label>Provider name<input value={provider.name} onChange={(event) => updateProvider(id, "name", event.target.value)} /></label>
-            <label>Protocol<select value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label>
-            <label>{copy.key}<input type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label>
-            <label>{copy.baseUrl}<input value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label>
-            <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => updateProvider(id, "model", model)}><Check size={14} /></button><input value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
-          </fieldset>)}
+          {orderedProviders(settings).map(([id, provider], index) => {
+            const editing = isEditingProvider(id);
+            return <fieldset key={id} className={editing ? "is-editing" : ""}>
+              <legend>{provider.name}</legend>
+              <div className="provider-row-actions"><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div>
+              <div className="provider-presets"><span>{settings.language === "zh" ? "端点预设" : "Endpoint preset"}</span><button type="button" className="provider-edit-toggle" onClick={() => setProviderEditing(id, !editing)}><Pencil size={13} />{editing ? (settings.language === "zh" ? "完成编辑" : "Done editing") : (settings.language === "zh" ? "编辑配置" : "Edit provider")}</button>{(Object.keys(PROVIDER_PRESETS) as ProviderPresetId[]).map((presetId) => <button type="button" disabled={!editing} key={presetId} className={provider.baseUrl === PROVIDER_PRESETS[presetId].baseUrl ? "active" : ""} onClick={() => applyProviderPreset(id, presetId)}>{PROVIDER_PRESETS[presetId].label}</button>)}</div>
+              {!editing && <p className="provider-saved-endpoint">{settings.language === "zh" ? "已保存端点" : "Saved endpoint"}<code>{provider.baseUrl || "—"}</code></p>}
+              <label>Provider name<input disabled={!editing} value={provider.name} onChange={(event) => updateProvider(id, "name", event.target.value)} /></label>
+              <label>Protocol<select disabled={!editing} value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label>
+              <label>{copy.key}<input disabled={!editing} type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label>
+              <label>{copy.baseUrl}<input disabled={!editing} value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label>
+              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => updateProvider(id, "model", model)}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
+            </fieldset>;
+          })}
         </>}
         {tab === "behavior" && <><h3>{copy.behaviorTitle}</h3><label>{copy.systemPrompt}<textarea value={settings.systemPrompt} onChange={(event) => onChange({ ...settings, systemPrompt: event.target.value })} placeholder={copy.systemDetail} rows={5} /></label><div className="two-fields"><label>{copy.namingProvider}<select value={settings.namingProvider} onChange={(event) => onChange({ ...settings, namingProvider: event.target.value })}>{orderedProviders(settings).map(([id, provider]) => <option key={id} value={id}>{provider.name}</option>)}</select></label><label>{copy.namingModel}<input value={settings.namingModel} onChange={(event) => onChange({ ...settings, namingModel: event.target.value })} placeholder="Leave blank to use first message" /></label></div><p className="muted">{copy.namingDetail}</p><div className="two-fields"><label>{settings.language === "zh" ? "Thinking 强度" : "Thinking level"}<select value={settings.thinkingLevel} onChange={(event) => onChange({ ...settings, thinkingLevel: event.target.value as ThinkingLevel })}><option value="off">{settings.language === "zh" ? "关闭" : "Off"}</option><option value="low">{settings.language === "zh" ? "低" : "Low"}</option><option value="medium">{settings.language === "zh" ? "中" : "Medium"}</option><option value="high">{settings.language === "zh" ? "高" : "High"}</option><option value="custom">{settings.language === "zh" ? "自定义" : "Custom"}</option></select></label>{settings.thinkingLevel === "custom" && <label>{settings.language === "zh" ? "Thinking token budget" : "Thinking token budget"}<input type="number" min="0" step="128" value={settings.thinkingBudget} onFocus={(event) => event.currentTarget.select()} onChange={(event) => onChange({ ...settings, thinkingBudget: Number(event.target.value) || 0 })} /></label>}</div><p className="muted">{settings.language === "zh" ? "自定义预算会原样传给 Anthropic / Gemini。OpenAI 兼容协议仅支持 low / medium / high，会按预算映射到最接近的档位。" : "A custom budget is sent as-is to Anthropic and Gemini. OpenAI-compatible APIs only accept low / medium / high, so it is mapped to the nearest level."}</p><label>{copy.language}<select value={settings.language} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="en">English</option><option value="zh">中文</option></select></label><label className="toggle-row"><input type="checkbox" checked={settings.sendWithEnter} onChange={(event) => onChange({ ...settings, sendWithEnter: event.target.checked })} />{copy.enterSends}</label></>}
         {tab === "tools" && <><h3>{copy.toolsTitle}</h3><p className="muted">{copy.toolsDetail}</p><label>{copy.functionDeclarations}<textarea value={settings.nativeTools.functionDeclarations} onChange={(event) => onChange({ ...settings, nativeTools: { functionDeclarations: event.target.value } })} placeholder={copy.functionDetail} rows={8} /></label></>}
