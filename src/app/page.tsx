@@ -8,13 +8,13 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
-  CircleHelp,
   Copy,
   FileText,
   GitBranch,
   ImagePlus,
   Menu,
   MessageSquarePlus,
+  MessageSquareText,
   Mic,
   MoreHorizontal,
   PanelLeftClose,
@@ -35,7 +35,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
@@ -151,6 +151,13 @@ type ContentPart = {
   response?: unknown;
 };
 
+type FeedbackTarget = {
+  chatTitle?: string;
+  messageId?: string;
+  response?: string;
+  reaction?: "helpful" | "not-helpful";
+};
+
 function messageParts(message: SavedMessage): ContentPart[] {
   return [
     ...(message.content as ContentPart[]),
@@ -232,7 +239,7 @@ function MessageBody({ message }: { message: SavedMessage }) {
   </>;
 }
 
-function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResult }: { message: SavedMessage; index: number; onFork: (index: number) => void; onEdit: (index: number, text: string) => void; onReload: (index: number) => void; onFunctionResult: (index: number, call: FunctionCallRequest) => void }) {
+function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResult, onFeedback }: { message: SavedMessage; index: number; onFork: (index: number) => void; onEdit: (index: number, text: string) => void; onReload: (index: number) => void; onFunctionResult: (index: number, call: FunctionCallRequest) => void; onFeedback: (target: FeedbackTarget) => void }) {
   const user = message.role === "user";
   const hasThinking = !user && message.content.some((part) => part.type === "reasoning" && Boolean(part.text));
   const locale = useContext(LocaleContext);
@@ -248,8 +255,8 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResul
       {!user && <div className="assistant-avatar"><MossMark size={15} /></div>}
       <div className={user ? "user-bubble" : "assistant-copy"}>{editing ? <div className="inline-message-editor"><textarea autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); const next = draft.trim(); if (next) { onEdit(index, next); setEditing(false); } } }} /><div><button type="button" onClick={() => setEditing(false)}>{locale === "zh" ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={() => { const next = draft.trim(); if (next) { onEdit(index, next); setEditing(false); } }}>{locale === "zh" ? "保存并重试" : "Save & retry"}</button></div></div> : <MessageBody message={message} />}</div>
     </div>
+    {!user && !message.status?.running && <div className="answer-feedback"><span>{locale === "zh" ? "这条回答怎么样？" : "How was this response?"}</span><button className="icon-button" type="button" aria-label={locale === "zh" ? "有帮助" : "Helpful"} title={locale === "zh" ? "有帮助" : "Helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "helpful" })}><ThumbsUp size={15} /></button><button className="icon-button" type="button" aria-label={locale === "zh" ? "没有帮助" : "Not helpful"} title={locale === "zh" ? "没有帮助" : "Not helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "not-helpful" })}><ThumbsDown size={15} /></button></div>}
     <div className="message-actions">
-      {!user && <><button className="icon-button" type="button" aria-label="Helpful" title="Helpful"><ThumbsUp size={16} /></button><button className="icon-button" type="button" aria-label="Not helpful" title="Not helpful"><ThumbsDown size={16} /></button></>}
       <button className="icon-button" type="button" aria-label="Copy" title="Copy" onClick={() => void copyMessage()}><Copy size={16} /></button>
       {user && <button className="icon-button" type="button" aria-label="Edit" title="Edit" onClick={() => { setDraft(messageText(message)); setEditing(true); }}><Pencil size={16} /></button>}
       {!user && <button className="icon-button" type="button" aria-label="Regenerate" title="Regenerate" onClick={() => onReload(index)}><RefreshCw size={16} /></button>}
@@ -363,7 +370,7 @@ function StarterPrompts({ onSend }: { onSend: (prompt: string) => void }) {
   return <div className="starter-prompts">{prompts.map((prompt) => <button key={prompt} type="button" onClick={() => onSend(prompt)}>{prompt}<SendHorizontal size={15} /></button>)}</div>;
 }
 
-function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSettingsChange }: { chat: Chat; settings: AppSettings; systemPrompt: string; onSnapshot: (id: string, messages: SavedMessage[], dirtyMessageIds?: string[]) => void; onFork: (index: number) => void; onSettingsChange: (next: AppSettings) => void }) {
+function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSettingsChange, onFeedback }: { chat: Chat; settings: AppSettings; systemPrompt: string; onSnapshot: (id: string, messages: SavedMessage[], dirtyMessageIds?: string[]) => void; onFork: (index: number) => void; onSettingsChange: (next: AppSettings) => void; onFeedback: (target: FeedbackTarget) => void }) {
   const copy = useCopy();
   const [isRunning, setIsRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -475,7 +482,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
   const cancel = () => abortRef.current?.abort();
   const empty = chat.messages.length === 0;
   return <div className="thread-root">
-    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onFunctionResult={submitFunctionResult} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><p>{copy.mistakes}</p></footer></>}
+    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><p>{copy.mistakes}</p></footer></>}
   </div>;
 }
 
@@ -585,6 +592,53 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
   </section></div>;
 }
 
+function FeedbackDialog({ target, onClose }: { target: FeedbackTarget | null; onClose: () => void }) {
+  const locale = useContext(LocaleContext);
+  const [message, setMessage] = useState("");
+  const [email, setEmail] = useState("");
+  const [subscribe, setSubscribe] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState("");
+  const isChinese = locale === "zh";
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const content = message.trim();
+    if (!content) {
+      setError(isChinese ? "请先填写反馈内容。" : "Please describe what is broken or missing.");
+      return;
+    }
+    setSending(true);
+    setError("");
+    try {
+      const response = await fetch(process.env.NEXT_PUBLIC_FEEDBACK_ENDPOINT || "/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "omit",
+        body: JSON.stringify({
+          message: content,
+          email: email.trim(),
+          subscribe,
+          reaction: target?.reaction,
+          chatTitle: target?.chatTitle,
+          messageId: target?.messageId,
+          response: target?.response?.slice(0, 8000),
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error || "Feedback could not be sent.");
+      }
+      setSent(true);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : (isChinese ? "发送失败，请稍后再试。" : "Could not send feedback. Try again later."));
+    } finally {
+      setSending(false);
+    }
+  };
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="feedback-title" onMouseDown={(event) => event.stopPropagation()}><header><div><MessageSquareText size={20} /><h2 id="feedback-title">{isChinese ? "反馈" : "Feedback"}</h2></div><button className="icon-button" type="button" aria-label={isChinese ? "关闭" : "Close"} onClick={onClose}><X /></button></header>{sent ? <div className="feedback-sent"><h3>{isChinese ? "已发送，谢谢。" : "Thanks, your feedback was sent."}</h3><p>{isChinese ? "我们会查看每一条反馈。" : "We review every submission."}</p><button type="button" className="text-button" onClick={onClose}>{isChinese ? "完成" : "Done"}</button></div> : <form onSubmit={submit}><div className="feedback-body"><label>{isChinese ? "有什么坏了或者缺什么？" : "What is broken or missing?"}<textarea autoFocus value={message} maxLength={4000} onChange={(event) => setMessage(event.target.value)} /></label>{target?.response && <p className="feedback-context">{isChinese ? "这条回答会随反馈一同发送。" : "This response will be included with your feedback."}</p>}<label>{isChinese ? "邮箱（可选，想收到回复就填）" : "Email (optional, only if you want a reply)"}<input type="email" inputMode="email" autoComplete="email" value={email} maxLength={254} onChange={(event) => setEmail(event.target.value)} /></label><label className="feedback-subscribe"><input type="checkbox" checked={subscribe} onChange={(event) => setSubscribe(event.target.checked)} />{isChinese ? "也通知我新版本（大约每月一封）" : "Also notify me about new versions (about one email a month)"}</label><p className="feedback-privacy">{isChinese ? "反馈会发送到 MossChat 的反馈邮箱。若勾选订阅，邮箱会加入新版本通知名单。" : "Feedback is sent to the MossChat feedback mailbox. If you opt in, your email is added to the release update list."}</p>{error && <p className="feedback-error" role="alert">{error}</p>}</div><footer><button type="button" className="feedback-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button><button type="submit" className="text-button" disabled={sending}>{sending ? (isChinese ? "发送中…" : "Sending…") : (isChinese ? "发送反馈" : "Send feedback")}</button></footer></form>}</section></div>;
+}
+
 function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRename }: { notebook: Notebook; chats: Chat[]; onBack: () => void; onCreateChat: () => void; onOpenChat: (chatId: string) => void; onRename: (title: string) => void }) {
   const locale = useContext(LocaleContext);
   return <main className="notebook-view"><header><div className="notebook-title"><div className="notebook-heading"><BookOpen size={22} /><input value={notebook.title} onChange={(event) => onRename(event.target.value)} aria-label={locale === "zh" ? "笔记本名称" : "Notebook name"} /></div><span>{locale === "zh" ? `${chats.length} 个会话` : `${chats.length} chats`}</span></div><div className="notebook-actions"><button type="button" className="top-icon" onClick={onBack}><ChevronLeft size={16} />{locale === "zh" ? "返回" : "Back"}</button><button type="button" className="top-icon" onClick={onCreateChat}><MessageSquarePlus size={16} />{locale === "zh" ? "新建会话" : "New chat"}</button></div></header><section className="notebook-chats"><h3>{locale === "zh" ? "会话" : "Chats"}</h3>{chats.length ? chats.map((chat) => <button key={chat.id} type="button" onClick={() => onOpenChat(chat.id)}><span><strong>{chat.title}</strong><small>{searchExcerpt(chat, "") || (locale === "zh" ? "还没有消息" : "No messages yet")}</small></span><time>{shortDate(chat.updatedAt, locale)}</time></button>) : <div className="notebook-empty"><p>{locale === "zh" ? "这个 Notebook 还没有会话。" : "This Notebook has no chats yet."}</p><button className="new-chat" type="button" onClick={onCreateChat}><MessageSquarePlus size={17} />{locale === "zh" ? "创建第一条会话" : "Create the first chat"}</button></div>}</section></main>;
@@ -605,6 +659,7 @@ export default function Home() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [feedbackTarget, setFeedbackTarget] = useState<FeedbackTarget | null | undefined>(undefined);
   const [promptTarget, setPromptTarget] = useState<{ scope: "chat" | "notebook"; id: string } | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
@@ -880,13 +935,14 @@ export default function Home() {
         <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><Menu /></button>
         <div className="top-model-controls"><ModelMenu settings={settings} onChange={setSettings} /><ThinkingMenu settings={settings} onChange={setSettings} /></div>
         {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action" onClick={() => setPromptTarget(activeChat ? { scope: "chat", id: activeChat.id } : { scope: "notebook", id: activeNotebook!.id })}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
-        <div className="top-actions">{activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}<div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div><button className="icon-button" title="Help"><CircleHelp size={19} /></button></div>
+        <div className="top-actions">{activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}<div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div><button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button></div>
       </header>
-      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
+      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
     </section>
     {searchOpen && <div className="modal-backdrop" onMouseDown={() => setSearchOpen(false)}><section className="search-dialog" onMouseDown={(event) => event.stopPropagation()}><Search size={19} /><input autoFocus placeholder={copy.search} value={query} onChange={(event) => setQuery(event.target.value)} /><button className="icon-button" onClick={() => setSearchOpen(false)}><X /></button><div className="search-results"><p>{settings.language === "zh" ? "结果" : "Results"}</p>{searchResults.map((chat) => <button key={chat.id} onClick={() => { selectChat(chat.id); setSearchOpen(false); }}><span><strong>{chat.title}</strong><small>{searchExcerpt(chat, query)}</small></span><time>{shortDate(chat.updatedAt, settings.language)}</time></button>)}{query.trim() && !searchResults.length && <p className="search-empty">{settings.language === "zh" ? "没有匹配的对话内容。" : "No matching chat content."}</p>}</div></section></div>}
     {settingsOpen && <SettingsDialog settings={settings} safety={storageSafety} onChange={setSettings} onClose={() => setSettingsOpen(false)} onRequestPersistent={enablePersistentStorage} onChooseAutoBackup={configureAutomaticBackup} />}
     {promptTarget && promptTargetItem && <PromptDialog key={`${promptTarget.scope}:${promptTarget.id}`} target={promptTargetItem} scope={promptTarget.scope} settings={settings} onChange={setSettings} onSavePrompt={(prompt) => { if (promptTarget.scope === "chat") saveChatSystemPrompt(promptTarget.id, prompt); else saveNotebookSystemPrompt(promptTarget.id, prompt); }} onClose={() => setPromptTarget(null)} />}
+    {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;
 }

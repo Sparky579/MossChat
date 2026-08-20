@@ -1,0 +1,6 @@
+name = "mosschat-feedback"
+main = "src/index.ts"
+compatibility_date = "2026-08-20"
+
+[vars]
+ALLOWED_ORIGIN = "https://chat.utilgadgets.com"

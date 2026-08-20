@@ -25,6 +25,6 @@ For visual changes, include a screenshot or short recording when it helps review
 
 MossChat keeps provider keys and conversation data in the browser. Changes that add a server side key store, accounts, billing, hosted RAG, or autonomous tool execution are outside the project scope. The reasons are described in the README.
 
-## Translations and documentation
+## Documentation
 
-Keep the English and Simplified Chinese README content aligned when changing user visible behavior. Use direct wording and describe actual behavior rather than planned behavior.
+Use direct wording and describe actual behavior rather than planned behavior.

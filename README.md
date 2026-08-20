@@ -12,12 +12,10 @@ Browser based chat client for your own model API keys. Keys, chats, files, and s
   · <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-198754.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-198754.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-198754.svg)](CHANGELOG.md)
 [![Next.js](https://img.shields.io/badge/Next.js-15-111111.svg)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6.svg)](https://www.typescriptlang.org/)
-
-<p><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a></p>
 
 </div>
 
@@ -114,4 +112,8 @@ Bug reports, fixes, tests, and translations are welcome. Read [CONTRIBUTING.md](
 
 ## License
 
-MossChat is released under the [MIT License](LICENSE).
+MossChat is released under the [GNU Affero General Public License v3.0](LICENSE).
+
+## Thanks
+
+Special thanks to [Linux.do](https://linux.do/).
