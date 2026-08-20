@@ -1,9 +1,12 @@
-import type { AppData, AppSettings, Chat, Notebook, SavedMessage } from "./types";
+import type { AppData, AppSettings, Chat, Notebook, SavedAttachment, SavedMessage } from "./types";
 
 const CONFIG_KEY = "mosschat.webdav.sync.v1";
-const INDEX_PREFIX = "mosschat.webdav.sync.index.v1";
+const INDEX_PREFIX = "mosschat.webdav.sync.index.v2";
+const CLOCK_PREFIX = "mosschat.webdav.sync.clock.v1";
+const LAST_SYNC_PREFIX = "mosschat.webdav.sync.last-success.v1";
 const META_FILE = "meta.json";
 const ITERATIONS = 600_000;
+const MAX_SYNC_IMAGE_EDGE = 2048;
 
 export type SyncConfig = {
   endpoint: string;
@@ -14,17 +17,11 @@ export type SyncConfig = {
   includeKeys: boolean;
 };
 
-type AgentSyncConfig = {
-  url?: unknown;
-  username?: unknown;
-  password?: unknown;
-  protocol?: unknown;
-  path?: unknown;
-};
-
+type AgentSyncConfig = { url?: unknown; username?: unknown; password?: unknown; protocol?: unknown; path?: unknown };
 type EncryptedEnvelope = { v: 1; iv: string; data: string };
-type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown };
-type SyncIndex = Record<string, { hash: string; updatedAt: string }>;
+type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown; clock?: number; deviceId?: string };
+type SyncIndexEntry = { hash: string; clock: number; deviceId: string; updatedAt: string };
+type SyncIndex = Record<string, SyncIndexEntry>;
 
 export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", deviceId: crypto.randomUUID(), includeKeys: false });
 
@@ -35,26 +32,17 @@ export function loadSyncConfig(): SyncConfig {
   } catch { return emptySyncConfig(); }
 }
 
-export function saveSyncConfig(config: SyncConfig) {
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
-}
-
-export function isSyncConfigured(config: SyncConfig) {
-  return Boolean(config.endpoint && config.username && config.password && config.passphrase);
-}
+export function saveSyncConfig(config: SyncConfig) { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); }
+export function isSyncConfigured(config: SyncConfig) { return Boolean(config.endpoint && config.username && config.password && config.passphrase); }
 
 /** Accepts the machine-readable block emitted by the sync-server setup task. */
 export function parseAgentSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "username" | "password"> {
   const match = value.match(/===SYNC_CONFIG_START===\s*([\s\S]*?)\s*===SYNC_CONFIG_END===/);
   if (!match) throw new Error("Paste the complete SYNC_CONFIG block from the setup result.");
-
   let parsed: AgentSyncConfig;
   try { parsed = JSON.parse(match[1]) as AgentSyncConfig; } catch { throw new Error("The SYNC_CONFIG block does not contain valid JSON."); }
   if (parsed.protocol !== "webdav") throw new Error("This SYNC_CONFIG block is not for WebDAV.");
-  if (typeof parsed.url !== "string" || typeof parsed.username !== "string" || typeof parsed.password !== "string" || typeof parsed.path !== "string") {
-    throw new Error("The SYNC_CONFIG block is missing a URL, username, password, or path.");
-  }
-
+  if (typeof parsed.url !== "string" || typeof parsed.username !== "string" || typeof parsed.password !== "string" || typeof parsed.path !== "string") throw new Error("The SYNC_CONFIG block is missing a URL, username, password, or path.");
   let source: URL;
   try { source = new URL(parsed.url); } catch { throw new Error("The SYNC_CONFIG URL is invalid."); }
   if (source.protocol !== "https:" && source.hostname !== "localhost" && source.hostname !== "127.0.0.1") throw new Error("The SYNC_CONFIG URL must use HTTPS.");
@@ -67,17 +55,23 @@ export function parseAgentSyncConfig(value: string): Pick<SyncConfig, "endpoint"
   return { endpoint: endpoint.href, username: parsed.username, password: parsed.password };
 }
 
-function indexKey(config: SyncConfig) {
-  return `${INDEX_PREFIX}:${config.deviceId}:${config.endpoint}`;
-}
+function configScope(config: SyncConfig) { return `${config.deviceId}:${config.endpoint}`; }
+function indexKey(config: SyncConfig) { return `${INDEX_PREFIX}:${configScope(config)}`; }
+function clockKey(config: SyncConfig) { return `${CLOCK_PREFIX}:${configScope(config)}`; }
+function lastSyncKey(config: SyncConfig) { return `${LAST_SYNC_PREFIX}:${configScope(config)}`; }
 
 function loadIndex(config: SyncConfig): SyncIndex {
-  try { return JSON.parse(localStorage.getItem(indexKey(config)) ?? "{}") as SyncIndex; } catch { return {}; }
+  try {
+    const source = JSON.parse(localStorage.getItem(indexKey(config)) ?? "{}") as Record<string, Partial<SyncIndexEntry>>;
+    return Object.fromEntries(Object.entries(source).flatMap(([file, entry]) => typeof entry.hash !== "string" ? [] : [[file, { hash: entry.hash, clock: Number.isSafeInteger(entry.clock) && (entry.clock ?? 0) >= 0 ? Number(entry.clock) : 0, deviceId: typeof entry.deviceId === "string" ? entry.deviceId : "legacy", updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : new Date(0).toISOString() }]]));
+  } catch { return {}; }
 }
 
-function saveIndex(config: SyncConfig, index: SyncIndex) {
-  localStorage.setItem(indexKey(config), JSON.stringify(index));
-}
+function saveIndex(config: SyncConfig, index: SyncIndex) { localStorage.setItem(indexKey(config), JSON.stringify(index)); }
+function loadClock(config: SyncConfig) { return Math.max(0, Number(localStorage.getItem(clockKey(config)) ?? "0") || 0); }
+function saveClock(config: SyncConfig, clock: number) { localStorage.setItem(clockKey(config), String(clock)); }
+export function loadLastSyncAt(config: SyncConfig) { return localStorage.getItem(lastSyncKey(config)) || null; }
+function saveLastSyncAt(config: SyncConfig, value: string) { localStorage.setItem(lastSyncKey(config), value); }
 
 const bytesToBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 const base64ToBytes = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
@@ -96,13 +90,9 @@ function normalizedEndpoint(endpoint: string) {
   return url.href.endsWith("/") ? url.href : `${url.href}/`;
 }
 
-function authorization(config: SyncConfig) {
-  return `Basic ${bytesToBase64(encoder.encode(`${config.username}:${config.password}`))}`;
-}
-
+function authorization(config: SyncConfig) { return `Basic ${bytesToBase64(encoder.encode(`${config.username}:${config.password}`))}`; }
 async function request(config: SyncConfig, path: string, init: RequestInit = {}) {
-  const response = await fetch(`${normalizedEndpoint(config.endpoint)}${path}`, { ...init, headers: { Authorization: authorization(config), ...(init.headers ?? {}) }, credentials: "omit" });
-  return response;
+  return fetch(`${normalizedEndpoint(config.endpoint)}${path}`, { ...init, headers: { Authorization: authorization(config), ...(init.headers ?? {}) }, credentials: "omit" });
 }
 
 async function getSalt(config: SyncConfig) {
@@ -143,16 +133,75 @@ function safeSettings(settings: AppSettings, includeKeys: boolean) {
   return { ...rest, providers: Object.fromEntries(Object.entries(providers).map(([id, provider]) => [id, { ...provider, apiKey: includeKeys ? provider.apiKey : "" }])) } as AppSettings;
 }
 
-function recordsFor(data: AppData, settings: AppSettings, includeKeys: boolean): SyncRecord[] {
+async function dataUrlFromBlob(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function compressImageForSync(dataUrl: string): Promise<{ value: string; compressed: boolean }> {
+  if (!/^data:image\/(?!svg\+xml|gif)/i.test(dataUrl)) return { value: dataUrl, compressed: false };
+  try {
+    const source = await fetch(dataUrl).then((response) => response.blob());
+    const bitmap = await createImageBitmap(source);
+    const ratio = Math.min(1, MAX_SYNC_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height));
+    const width = Math.max(1, Math.round(bitmap.width * ratio));
+    const height = Math.max(1, Math.round(bitmap.height * ratio));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
+    bitmap.close();
+    const compressed = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/webp", 0.82));
+    if (!compressed || compressed.size >= source.size) return { value: dataUrl, compressed: false };
+    return { value: await dataUrlFromBlob(compressed), compressed: true };
+  } catch { return { value: dataUrl, compressed: false }; }
+}
+
+async function compactAttachment(attachment: SavedAttachment) {
+  if (attachment.type !== "image") return { attachment, compressed: 0 };
+  let compressed = 0;
+  const content = [] as SavedAttachment["content"];
+  for (const part of attachment.content) {
+    const image = typeof part.image === "string" ? part.image : "";
+    if (!image) { content.push(part); continue; }
+    const result = await compressImageForSync(image);
+    if (result.compressed) compressed += 1;
+    content.push(result.compressed ? { ...part, image: result.value } : part);
+  }
+  return { attachment: compressed ? { ...attachment, content, contentType: "image/webp" } : attachment, compressed };
+}
+
+async function compactMessage(message: SavedMessage) {
+  if (!message.attachments?.length) return { message, compressed: 0 };
+  let compressed = 0;
+  const attachments: SavedAttachment[] = [];
+  for (const attachment of message.attachments) {
+    const result = await compactAttachment(attachment);
+    attachments.push(result.attachment);
+    compressed += result.compressed;
+  }
+  return { message: compressed ? { ...message, attachments } : message, compressed };
+}
+
+async function recordsFor(data: AppData, settings: AppSettings, includeKeys: boolean) {
   const records: SyncRecord[] = [];
+  let compressedImages = 0;
   for (const chat of data.chats) {
     const { messages, ...meta } = chat;
     records.push({ type: "chat", id: chat.id, updatedAt: chat.updatedAt, payload: meta });
-    for (const [seq, message] of messages.entries()) records.push({ type: "message", id: `${chat.id}:${message.id}`, updatedAt: chat.updatedAt, payload: { chatId: chat.id, seq, message } });
+    for (const [seq, source] of messages.entries()) {
+      const result = await compactMessage(source);
+      compressedImages += result.compressed;
+      records.push({ type: "message", id: `${chat.id}:${source.id}`, updatedAt: chat.updatedAt, payload: { chatId: chat.id, seq, message: result.message } });
+    }
   }
   for (const notebook of data.notebooks) records.push({ type: "notebook", id: notebook.id, updatedAt: notebook.updatedAt, payload: notebook });
   records.push({ type: "settings", id: "settings", updatedAt: new Date().toISOString(), payload: safeSettings(settings, includeKeys) });
-  return records;
+  return { records, compressedImages };
 }
 
 function recordFile(record: SyncRecord) {
@@ -160,17 +209,42 @@ function recordFile(record: SyncRecord) {
   return `${prefix}-${encodeURIComponent(record.id)}.bin`;
 }
 
-async function stampRecords(records: SyncRecord[], index: SyncIndex) {
-  const next: SyncIndex = {};
-  const stamped = await Promise.all(records.map(async (record) => {
+function recordClock(record: SyncRecord) {
+  return Number.isSafeInteger(record.clock) && (record.clock ?? 0) >= 0 ? Number(record.clock) : Math.max(0, Date.parse(record.updatedAt) || 0);
+}
+
+function normalizedRecord(record: SyncRecord): SyncRecord {
+  return { ...record, clock: recordClock(record), deviceId: typeof record.deviceId === "string" && record.deviceId ? record.deviceId : "legacy" };
+}
+
+function compareRecords(left: SyncRecord, right: SyncRecord) {
+  const clocks = recordClock(left) - recordClock(right);
+  if (clocks) return clocks;
+  const devices = String(left.deviceId ?? "legacy").localeCompare(String(right.deviceId ?? "legacy"));
+  return devices || left.updatedAt.localeCompare(right.updatedAt);
+}
+
+async function stampLocalRecords(records: SyncRecord[], index: SyncIndex, config: SyncConfig, minimumClock: number) {
+  let clock = Math.max(minimumClock, loadClock(config), ...Object.values(index).map((entry) => entry.clock));
+  const stamped: SyncRecord[] = [];
+  for (const record of records) {
     const file = recordFile(record);
     const hash = await contentHash(record.payload);
     const existing = index[file];
-    const updatedAt = existing?.hash === hash ? existing.updatedAt : record.updatedAt;
-    next[file] = { hash, updatedAt };
-    return { ...record, updatedAt };
-  }));
-  return { records: stamped, index: next };
+    if (existing?.hash === hash) {
+      stamped.push({ ...record, clock: existing.clock, deviceId: existing.deviceId, updatedAt: existing.updatedAt });
+      clock = Math.max(clock, existing.clock);
+      continue;
+    }
+    clock += 1;
+    stamped.push({ ...record, clock, deviceId: config.deviceId });
+  }
+  return { records: stamped, clock };
+}
+
+async function indexRecords(records: SyncRecord[]): Promise<SyncIndex> {
+  const entries = await Promise.all(records.map(async (record) => [recordFile(record), { hash: await contentHash(record.payload), clock: recordClock(record), deviceId: String(record.deviceId ?? "legacy"), updatedAt: record.updatedAt }] as const));
+  return Object.fromEntries(entries);
 }
 
 async function listFiles(config: SyncConfig) {
@@ -188,9 +262,26 @@ async function readRecords(config: SyncConfig, key: CryptoKey, files: string[]) 
   const values = await Promise.all(files.map(async (file) => {
     const response = await request(config, file);
     if (!response.ok) return null;
-    try { return await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope); } catch { return null; }
+    try { return normalizedRecord(await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope)); } catch { return null; }
   }));
   return values.filter((value): value is SyncRecord => Boolean(value));
+}
+
+function resolveRecords(local: SyncRecord[], remote: SyncRecord[]) {
+  const selected = new Map(local.map((record) => [recordFile(record), record]));
+  for (const record of remote) {
+    const file = recordFile(record);
+    const current = selected.get(file);
+    if (!current || compareRecords(record, current) > 0) selected.set(file, record);
+  }
+  const removed = new Set<string>();
+  for (const tomb of selected.values()) {
+    if (tomb.type !== "tomb") continue;
+    const target = String((tomb.payload as { file?: string }).file ?? "");
+    const current = selected.get(target);
+    if (!current || compareRecords(tomb, current) >= 0) removed.add(target);
+  }
+  return [...selected.entries()].filter(([file]) => !removed.has(file)).map(([, record]) => record);
 }
 
 function assembledData(records: SyncRecord[]) {
@@ -206,70 +297,44 @@ function assembledData(records: SyncRecord[]) {
     const chat = chats.get(value.chatId);
     if (chat) chat.messages[value.seq] = value.message;
   }
-  for (const chat of chats.values()) chat.messages = chat.messages.filter(Boolean);
+  for (const chat of chats.values()) chat.messages = chat.messages.filter(Boolean).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   return { chats: [...chats.values()], notebooks: [...notebooks.values()] };
 }
 
-function applyTombs(data: AppData, tombs: Set<string>): AppData {
-  const chatIds = new Set([...tombs].filter((file) => file.startsWith("c-")).map((file) => decodeURIComponent(file.slice(2, -4))));
-  const notebookIds = new Set([...tombs].filter((file) => file.startsWith("n-")).map((file) => decodeURIComponent(file.slice(2, -4))));
-  const messageIds = new Set([...tombs].filter((file) => file.startsWith("m-")).map((file) => decodeURIComponent(file.slice(2, -4))));
-  return { chats: data.chats.filter((chat) => !chatIds.has(chat.id)).map((chat) => ({ ...chat, messages: chat.messages.filter((message) => !messageIds.has(`${chat.id}:${message.id}`)) })), notebooks: data.notebooks.filter((notebook) => !notebookIds.has(notebook.id)) };
+function settingsForLocal(selected: SyncRecord | undefined, local: AppSettings, includeKeys: boolean) {
+  if (!selected || selected.type !== "settings") return local;
+  const remote = selected.payload as AppSettings;
+  if (includeKeys) return remote;
+  return { ...remote, providers: Object.fromEntries(Object.entries(remote.providers).map(([id, provider]) => [id, { ...provider, apiKey: local.providers[id]?.apiKey ?? "" }])) };
 }
 
-function mergeById<T extends { id: string; updatedAt: string }>(local: T[], remote: T[]) {
-  const merged = new Map(local.map((item) => [item.id, item]));
-  for (const item of remote) {
-    const current = merged.get(item.id);
-    if (!current || item.updatedAt > current.updatedAt) merged.set(item.id, item);
-  }
-  return [...merged.values()];
-}
-
-function mergeData(local: AppData, remote: AppData): AppData {
-  const chats = mergeById(local.chats, remote.chats).map((chat) => {
-    const remoteChat = remote.chats.find((item) => item.id === chat.id);
-    const localChat = local.chats.find((item) => item.id === chat.id);
-    if (!remoteChat || !localChat) return chat;
-    const messages = new Map(localChat.messages.map((message) => [message.id, message]));
-    for (const message of remoteChat.messages) if (!messages.has(message.id)) messages.set(message.id, message);
-    return { ...(remoteChat.updatedAt > localChat.updatedAt ? remoteChat : localChat), messages: [...messages.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt)) };
-  });
-  return { chats, notebooks: mergeById(local.notebooks, remote.notebooks) };
-}
-
-function mergeSettings(local: AppSettings, remote: AppSettings | undefined, includeKeys: boolean) {
-  if (!remote) return local;
-  const providers = { ...remote.providers, ...local.providers };
-  if (!includeKeys) for (const [id, provider] of Object.entries(providers)) providers[id] = { ...provider, apiKey: local.providers[id]?.apiKey ?? "" };
-  const presetMap = new Map([...remote.promptPresets, ...local.promptPresets].map((preset) => [preset.id, preset]));
-  return { ...remote, ...local, providers, providerOrder: [...new Set([...local.providerOrder, ...remote.providerOrder])], promptPresets: [...presetMap.values()] };
-}
-
-export async function synchronizeWebDav({ config, data, settings, mode = "merge" }: { config: SyncConfig; data: AppData; settings: AppSettings; mode?: "merge" | "upload" }) {
+export async function synchronizeWebDav({ config, data, settings }: { config: SyncConfig; data: AppData; settings: AppSettings; mode?: "merge" | "upload" }) {
   if (!isSyncConfigured(config)) throw new Error("Configure endpoint, WebDAV credentials, and passphrase first.");
   const salt = await getSalt(config);
   const key = await encryptionKey(config.passphrase, salt);
   const previousIndex = loadIndex(config);
-  const files = mode === "merge" ? await listFiles(config) : [];
-  const remoteRecords = mode === "merge" ? await readRecords(config, key, files) : [];
-  const remoteTombs = new Set(remoteRecords.filter((record) => record.type === "tomb").map((record) => String((record.payload as { file?: string }).file ?? "")));
-  const activeRemoteRecords = remoteRecords.filter((record) => record.type !== "tomb" && !remoteTombs.has(recordFile(record)));
-  const localData = mode === "merge" ? applyTombs(data, remoteTombs) : data;
-  const remoteData = assembledData(activeRemoteRecords);
-  const remoteSettings = activeRemoteRecords.find((record) => record.type === "settings")?.payload as AppSettings | undefined;
-  const mergedData = mode === "merge" ? mergeData(localData, remoteData) : localData;
-  const mergedSettings = mode === "merge" ? mergeSettings(settings, remoteSettings, config.includeKeys) : settings;
-  const current = recordsFor(mergedData, mergedSettings, config.includeKeys);
-  const missingFiles = Object.keys(previousIndex).filter((file) => !current.some((record) => recordFile(record) === file) && !file.startsWith("t-"));
-  const tombs = missingFiles.map((file) => ({ type: "tomb" as const, id: file, updatedAt: new Date().toISOString(), payload: { file } }));
-  const stamped = await stampRecords([...current, ...tombs], previousIndex);
-  const remoteByFile = new Map(activeRemoteRecords.map((record) => [recordFile(record), record]));
-  const uploads = stamped.records.filter((record) => mode === "upload" || record.type === "tomb" || !remoteByFile.has(recordFile(record)) || record.updatedAt > remoteByFile.get(recordFile(record))!.updatedAt);
+  const remoteRecords = await readRecords(config, key, await listFiles(config));
+  const maximumRemoteClock = Math.max(0, ...remoteRecords.map(recordClock));
+  const local = await recordsFor(data, settings, config.includeKeys);
+  const localFiles = new Set(local.records.map(recordFile));
+  const tombs = Object.keys(previousIndex).filter((file) => !localFiles.has(file) && !file.startsWith("t-")).map((file) => ({ type: "tomb" as const, id: file, updatedAt: new Date().toISOString(), payload: { file } }));
+  const stamped = await stampLocalRecords([...local.records, ...tombs], previousIndex, config, maximumRemoteClock);
+  const resolved = resolveRecords(stamped.records, remoteRecords);
+  const remoteByFile = new Map(remoteRecords.map((record) => [recordFile(record), record]));
+  const uploads = resolved.filter((record) => {
+    const remote = remoteByFile.get(recordFile(record));
+    return !remote || compareRecords(record, remote) > 0;
+  });
   await Promise.all(uploads.map(async (record) => {
     const response = await request(config, recordFile(record), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await encrypt(key, record)) });
     if (!response.ok) throw new Error(`Could not upload ${record.type} record (${response.status}).`);
   }));
-  saveIndex(config, stamped.index);
-  return { data: mergedData, settings: mergedSettings, uploaded: uploads.length, downloaded: activeRemoteRecords.length };
+  const index = await indexRecords(resolved);
+  const clock = Math.max(stamped.clock, ...resolved.map(recordClock));
+  saveIndex(config, index);
+  saveClock(config, clock);
+  const now = new Date().toISOString();
+  saveLastSyncAt(config, now);
+  const activeRecords = resolved.filter((record) => record.type !== "tomb");
+  return { data: assembledData(activeRecords), settings: settingsForLocal(activeRecords.find((record) => record.type === "settings"), settings, config.includeKeys), uploaded: uploads.length, downloaded: remoteRecords.length, compressedImages: local.compressedImages, syncedAt: now };
 }

@@ -40,7 +40,7 @@ import {
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
-import { emptySyncConfig, isSyncConfigured, loadSyncConfig, parseAgentSyncConfig, saveSyncConfig, synchronizeWebDav, type SyncConfig } from "@/sync";
+import { emptySyncConfig, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseAgentSyncConfig, saveSyncConfig, synchronizeWebDav, type SyncConfig } from "@/sync";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
@@ -104,6 +104,17 @@ const shortDate = (time: string, locale: Locale) =>
   new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", { month: "short", day: "numeric" }).format(new Date(time));
 
 const formatBytes = (value?: number) => value === undefined ? "—" : value < 1024 * 1024 ? `${Math.round(value / 1024)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+
+function syncAge(time: string | null, now: number, locale: Locale) {
+  if (!time) return locale === "zh" ? "尚未同步" : "Not synced yet";
+  const seconds = Math.max(0, Math.floor((now - Date.parse(time)) / 1000));
+  if (seconds < 10) return locale === "zh" ? "刚刚同步" : "Synced just now";
+  if (seconds < 60) return locale === "zh" ? `${seconds} 秒前同步` : `Synced ${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return locale === "zh" ? `${minutes} 分钟前同步` : `Synced ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return locale === "zh" ? `${hours} 小时前同步` : `Synced ${hours}h ago`;
+}
 
 const toDataUrl = (file: File) =>
   new Promise<string>((resolve, reject) => {
@@ -872,18 +883,25 @@ export default function Home() {
   const [syncConfigOpen, setSyncConfigOpen] = useState(false);
   const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "error" | "done">("idle");
   const [syncMessage, setSyncMessage] = useState("");
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [syncNow, setSyncNow] = useState(() => Date.now());
   const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [installed, setInstalled] = useState(false);
   const [backupOptions, setBackupOptions] = useState({ chats: true, settings: true, attachments: true });
   const [storageSafety, setStorageSafety] = useState<StorageSafetyStatus | null>(null);
   const settingsRef = useRef(settings);
+  const dataRef = useRef(data);
+  const syncRunning = useRef(false);
   const namingAttempts = useRef(new Set<string>());
-  const autoSyncAttempt = useRef("");
+  const autoSyncSignature = useRef("");
   const deferredInstallPrompt = useRef<InstallPromptEvent | null>(null);
+  dataRef.current = data;
 
   useEffect(() => {
     setSettings(loadSettings());
-    setSyncConfig(loadSyncConfig());
+    const loadedSync = loadSyncConfig();
+    setSyncConfig(loadedSync);
+    setLastSyncAt(loadLastSyncAt(loadedSync));
     void getStorageSafetyStatus().then(setStorageSafety).catch(() => undefined);
     void loadData().then((stored) => {
       const initialData = stored.chats.length
@@ -931,23 +949,49 @@ export default function Home() {
   const activeSystemPrompt = activeChat?.systemPrompt ?? (activeChat?.notebookId ? data.notebooks.find((notebook) => notebook.id === activeChat.notebookId)?.systemPrompt : undefined) ?? settings.systemPrompt;
   const promptTargetItem = promptTarget?.scope === "chat" ? data.chats.find((chat) => chat.id === promptTarget.id) : promptTarget?.scope === "notebook" ? data.notebooks.find((notebook) => notebook.id === promptTarget.id) : null;
   const syncReady = isSyncConfigured(syncConfig);
-  const updateSyncConfig = (next: SyncConfig) => { setSyncConfig(next); saveSyncConfig(next); };
-  const runSync = useCallback(async (mode: "merge" | "upload" = "merge") => {
-    if (!syncReady) return;
+  const hasStreamingMessage = data.chats.some((chat) => chat.messages.some((message) => Boolean(message.status?.running)));
+  const syncSignature = useMemo(() => JSON.stringify({
+    chats: data.chats.map((chat) => [chat.id, chat.updatedAt, chat.messages.length, chat.messages.at(-1)?.id]),
+    notebooks: data.notebooks.map((notebook) => [notebook.id, notebook.updatedAt]),
+    settings,
+  }), [data, settings]);
+  const updateSyncConfig = (next: SyncConfig) => {
+    setSyncConfig(next);
+    saveSyncConfig(next);
+    setLastSyncAt(loadLastSyncAt(next));
+    autoSyncSignature.current = "";
+  };
+  const runSync = useCallback(async () => {
+    if (!isSyncConfigured(syncConfig) || syncRunning.current) return false;
+    const localData = dataRef.current;
+    const localSettings = settingsRef.current;
+    syncRunning.current = true;
     setSyncStatus("syncing");
     setSyncMessage("");
     try {
-      const result = await synchronizeWebDav({ config: syncConfig, data, settings, mode });
+      const result = await synchronizeWebDav({ config: syncConfig, data: localData, settings: localSettings });
+      if (dataRef.current !== localData || settingsRef.current !== localSettings) {
+        setSyncStatus("done");
+        setLastSyncAt(result.syncedAt);
+        setSyncMessage(settings.language === "zh" ? "已同步，新的本地改动正在排队。" : "Synced. New local changes are queued.");
+        return true;
+      }
       setData(result.data);
       await replaceData(result.data);
       setSettings(normalizeSettings(result.settings));
       setSyncStatus("done");
-      setSyncMessage(`${mode === "merge" ? "Synced" : "Uploaded"}: ${result.uploaded} uploaded, ${result.downloaded} remote records.`);
+      setLastSyncAt(result.syncedAt);
+      setSyncNow(Date.now());
+      setSyncMessage(`${settings.language === "zh" ? "已同步" : "Synced"}: ${result.uploaded} ${settings.language === "zh" ? "条上传" : "uploaded"}, ${result.downloaded} ${settings.language === "zh" ? "条远程记录" : "remote records"}${result.compressedImages ? `, ${result.compressedImages} ${settings.language === "zh" ? "张图片已压缩" : "images compressed"}` : ""}.`);
+      return true;
     } catch (error) {
       setSyncStatus("error");
       setSyncMessage(error instanceof Error ? error.message : "Sync failed.");
+      return false;
+    } finally {
+      syncRunning.current = false;
     }
-  }, [data, settings, syncConfig, syncReady]);
+  }, [settings.language, syncConfig]);
   const installApp = async () => {
     const prompt = deferredInstallPrompt.current;
     if (!prompt) { setInstallGuideOpen(true); return; }
@@ -956,11 +1000,24 @@ export default function Home() {
     if (choice.outcome === "accepted") { deferredInstallPrompt.current = null; setInstalled(true); }
   };
   useEffect(() => {
-    const key = `${syncConfig.endpoint}|${syncConfig.username}|${syncConfig.deviceId}`;
-    if (!hydrated || !syncReady || autoSyncAttempt.current === key) return;
-    autoSyncAttempt.current = key;
-    void runSync("merge");
-  }, [hydrated, runSync, syncConfig.deviceId, syncConfig.endpoint, syncConfig.username, syncReady]);
+    if (!hydrated || !syncReady || hasStreamingMessage || autoSyncSignature.current === syncSignature) return;
+    const timer = window.setTimeout(() => {
+      void runSync().then((completed) => { if (completed) autoSyncSignature.current = syncSignature; });
+    }, lastSyncAt ? 3_000 : 250);
+    return () => window.clearTimeout(timer);
+  }, [hasStreamingMessage, hydrated, lastSyncAt, runSync, syncReady, syncSignature]);
+  useEffect(() => {
+    if (!hydrated || !syncReady) return;
+    const timer = window.setInterval(() => { if (!hasStreamingMessage) void runSync(); }, 120_000);
+    const online = () => { if (!hasStreamingMessage) void runSync(); };
+    window.addEventListener("online", online);
+    return () => { window.clearInterval(timer); window.removeEventListener("online", online); };
+  }, [hasStreamingMessage, hydrated, runSync, syncReady]);
+  useEffect(() => {
+    if (!syncReady) return;
+    const timer = window.setInterval(() => setSyncNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [syncReady]);
 
   const createChat = useCallback((notebookId?: string) => {
     const now = new Date().toISOString();
@@ -1211,6 +1268,7 @@ export default function Home() {
   if (!hydrated) return <main className="boot-screen"><MossMark className="app-mark hero-mark" /><p>Opening local workspace…</p></main>;
 
   const copy = COPY[settings.language];
+  const syncStatusText = syncAge(lastSyncAt, syncNow, settings.language);
   return <LocaleContext.Provider value={settings.language}><main className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
     <aside className="sidebar">
       <div className="brand-row"><button type="button" className="brand" onClick={() => setSidebarOpen(false)}><MossMark className="app-mark brand-mark" /><span>MossChat</span></button><button className="icon-button collapse-button" onClick={() => setSidebarOpen(false)} aria-label="Collapse sidebar"><PanelLeftClose size={19} /></button></div>
@@ -1226,7 +1284,12 @@ export default function Home() {
         <div className="top-model-controls"><ModelMenu settings={settings} onChange={setSettings} /><ThinkingMenu settings={settings} onChange={setSettings} /></div>
         {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action" onClick={() => setPromptTarget(activeChat ? { scope: "chat", id: activeChat.id } : { scope: "notebook", id: activeNotebook!.id })}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
         {!installed && <button className="top-icon pwa-install-button" type="button" title={settings.language === "zh" ? "添加 MossChat 到桌面" : "Add MossChat to desktop"} onClick={() => void installApp()}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
-        <div className="top-actions">{activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}<div className="sync-wrap"><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncMenuOpen && <div className="sync-menu"><strong>{syncReady ? (settings.language === "zh" ? "WebDAV 已配置" : "WebDAV configured") : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync("upload")}><Upload size={15} />{settings.language === "zh" ? "上传" : "Upload"}</button><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync("merge")}><RefreshCw size={15} />{settings.language === "zh" ? "同步远程" : "Sync remote"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div><div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div><button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button></div>
+        <div className="top-actions">
+          {activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
+          <div className="sync-wrap"><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncStatus === "error" ? "error" : ""}`}><i />{syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
+          <div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div>
+          <button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
+        </div>
       </header>
       {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
     </section>

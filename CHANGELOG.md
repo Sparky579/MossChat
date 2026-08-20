@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+Background WebDAV sync now runs after local changes, on reconnect, and on a two-minute remote check. Manual **Sync now** uses the same merge path. Per-record Lamport clocks resolve concurrent edits deterministically, successful sync time is shown in the menu, and image replicas are compressed before encrypted upload without changing the local original.
+
 ## 0.2.1
 
 PWA with an app manifest, offline shell cache, and add-to-desktop guidance for desktop and mobile browsers.
