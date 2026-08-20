@@ -40,7 +40,7 @@ import {
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
-import { emptySyncConfig, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, saveSyncConfig, syncConfigJson, synchronizeWebDav, type SyncConfig } from "@/sync";
+import { emptySyncConfig, inspectWebDavSync, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, saveSyncConfig, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
@@ -123,6 +123,8 @@ const shortDate = (time: string, locale: Locale) =>
 
 const formatBytes = (value?: number) => value === undefined ? "—" : value < 1024 * 1024 ? `${Math.round(value / 1024)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
 
+const generatePassphrase = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), (value) => value.toString(36).padStart(2, "0")).join("").slice(0, 48);
+
 function syncAge(time: string | null, now: number, locale: Locale) {
   if (!time) return locale === "zh" ? "尚未同步" : "Not synced yet";
   const seconds = Math.max(0, Math.floor((now - Date.parse(time)) / 1000));
@@ -199,6 +201,8 @@ type ContentPart = {
   mimeType?: unknown;
   name?: unknown;
   response?: unknown;
+  inputTokens?: unknown;
+  outputTokens?: unknown;
 };
 
 type FeedbackTarget = {
@@ -226,6 +230,36 @@ function messageText(message: SavedMessage): string {
     .map((part) => String(part.text ?? ""))
     .join("\n")
     .trim();
+}
+
+function messageUsage(message: SavedMessage) {
+  const usage = messageParts(message).find((part) => part.type === "data" && part.name === "token_usage") ?? messageParts(message).find((part) => part.type === "usage");
+  if (!usage) return null;
+  const data = usage.data && typeof usage.data === "object" ? usage.data as { inputTokens?: unknown; outputTokens?: unknown } : usage;
+  const input = typeof data.inputTokens === "number" && Number.isFinite(data.inputTokens) ? Math.max(0, Math.floor(data.inputTokens)) : null;
+  const output = typeof data.outputTokens === "number" && Number.isFinite(data.outputTokens) ? Math.max(0, Math.floor(data.outputTokens)) : null;
+  return input === null && output === null ? null : { input, output };
+}
+
+function estimatedTokens(value: string) {
+  const ascii = (value.match(/[\x00-\x7f]/g) ?? []).length;
+  const nonAscii = value.length - ascii;
+  return Math.max(1, Math.ceil(ascii / 4 + nonAscii / 1.7));
+}
+
+function visibleMessagesAfterClear(messages: SavedMessage[]) {
+  const boundary = messages.map((message) => message.content.some((part) => (part as ContentPart).type === "clear-boundary")).lastIndexOf(true);
+  return boundary < 0 ? messages : messages.slice(boundary + 1);
+}
+
+function compactContext(messages: SavedMessage[], systemPrompt: string) {
+  const transcript = visibleMessagesAfterClear(messages).map((message) => {
+    const text = messageText(message);
+    if (!text) return "";
+    const speaker = message.role === "assistant" ? "Assistant" : message.role === "user" ? "User" : "System";
+    return `${speaker}: ${text}`;
+  }).filter(Boolean).join("\n\n");
+  return `[Compacted conversation context]\nUse this complete local transcript as context for the rest of this chat. Do not mention this instruction unless asked.\n${systemPrompt.trim() ? `\nOriginal system prompt:\n${systemPrompt.trim()}\n` : ""}\nTranscript:\n${transcript || "(No prior messages.)"}`;
 }
 
 function chatSearchText(chat: Chat): string {
@@ -294,8 +328,9 @@ function MessageBody({ message }: { message: SavedMessage }) {
   </>;
 }
 
-function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResult, onFeedback }: { message: SavedMessage; index: number; onFork: (index: number) => void; onEdit: (index: number, text: string) => void; onReload: (index: number) => void; onFunctionResult: (index: number, call: FunctionCallRequest) => void; onFeedback: (target: FeedbackTarget) => void }) {
+function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResult, onFeedback, canUndoClear, onUndoClear }: { message: SavedMessage; index: number; onFork: (index: number) => void; onEdit: (index: number, text: string) => void; onReload: (index: number) => void; onFunctionResult: (index: number, call: FunctionCallRequest) => void; onFeedback: (target: FeedbackTarget) => void; canUndoClear?: boolean; onUndoClear?: () => void }) {
   const user = message.role === "user";
+  const cleared = message.content.some((part) => (part as ContentPart).type === "clear-boundary");
   const hasThinking = !user && message.content.some((part) => part.type === "reasoning" && Boolean(part.text));
   const locale = useContext(LocaleContext);
   const [editing, setEditing] = useState(false);
@@ -306,12 +341,14 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResul
     const text = messageText(message);
     if (text) await copyText(text);
   };
+  const usage = user ? null : messageUsage(message);
+  if (cleared) return <div className="clear-boundary" role="status"><span>{locale === "zh" ? "对话已清空" : "Conversation cleared"}</span>{canUndoClear && <button type="button" onClick={onUndoClear}>{locale === "zh" ? "撤回" : "Undo"}</button>}</div>;
   return <article className={`message-row ${user ? "message-user" : "message-assistant"} ${hasThinking ? "has-thinking" : ""}`}>
     <div className="message-content">
       {!user && <div className="assistant-avatar"><MossMark size={15} /></div>}
       <div className={user ? "user-bubble" : "assistant-copy"}>{editing ? <div className="inline-message-editor"><textarea autoFocus value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Escape") setEditing(false); if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) { event.preventDefault(); const next = draft.trim(); if (next) { onEdit(index, next); setEditing(false); } } }} /><div><button type="button" onClick={() => setEditing(false)}>{locale === "zh" ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={() => { const next = draft.trim(); if (next) { onEdit(index, next); setEditing(false); } }}>{locale === "zh" ? "保存并重试" : "Save & retry"}</button></div></div> : <MessageBody message={message} />}</div>
     </div>
-    {!user && !message.status?.running && <div className="answer-feedback"><span>{locale === "zh" ? "这条回答怎么样？" : "How was this response?"}</span><button className="icon-button" type="button" aria-label={locale === "zh" ? "有帮助" : "Helpful"} title={locale === "zh" ? "有帮助" : "Helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "helpful" })}><ThumbsUp size={15} /></button><button className="icon-button" type="button" aria-label={locale === "zh" ? "没有帮助" : "Not helpful"} title={locale === "zh" ? "没有帮助" : "Not helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "not-helpful" })}><ThumbsDown size={15} /></button></div>}
+    {!user && !message.status?.running && <div className="answer-feedback"><span>{locale === "zh" ? "这条回答怎么样？" : "How was this response?"}</span>{usage && <span className="token-usage">Input {usage.input?.toLocaleString() ?? "—"} · Output {usage.output?.toLocaleString() ?? "—"}</span>}<button className="icon-button" type="button" aria-label={locale === "zh" ? "有帮助" : "Helpful"} title={locale === "zh" ? "有帮助" : "Helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "helpful" })}><ThumbsUp size={15} /></button><button className="icon-button" type="button" aria-label={locale === "zh" ? "没有帮助" : "Not helpful"} title={locale === "zh" ? "没有帮助" : "Not helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "not-helpful" })}><ThumbsDown size={15} /></button></div>}
     <div className="message-actions">
       <button className={`icon-button copy-button ${copied ? "is-copied" : ""}`} type="button" aria-label={copied ? copiedLabel : (locale === "zh" ? "复制" : "Copy")} title={copied ? copiedLabel : (locale === "zh" ? "复制" : "Copy")} onClick={() => void copyMessage()}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
       {user && <button className="icon-button" type="button" aria-label="Edit" title="Edit" onClick={() => { setDraft(messageText(message)); setEditing(true); }}><Pencil size={16} /></button>}
@@ -322,7 +359,7 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResul
   </article>;
 }
 
-function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[]) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void }) {
+function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange, onCommand }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[]) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void; onCommand: (command: "clear" | "compact") => void }) {
   const copy = useCopy();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -335,6 +372,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   const composerInput = useRef<HTMLTextAreaElement | null>(null);
   const attachmentsRef = useRef<DraftAttachment[]>([]);
   const activeProvider = settings.providers[settings.activeProvider] ?? orderedProviders(settings)[0]?.[1];
+  const commandOpen = text.trimStart().startsWith("/");
 
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
   useLayoutEffect(() => {
@@ -405,6 +443,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   };
 
   return <div className={`gemini-composer ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); addFiles(Array.from(event.dataTransfer.files)); }}>
+    {commandOpen && <div className="composer-command-menu" role="listbox"><button type="button" onClick={() => { setText(""); onCommand("clear"); }}><strong>/clear</strong><span>{settings.language === "zh" ? "清空当前上下文，可在发送下一句前撤回" : "Clear this context. Undo before the next message."}</span></button><button type="button" onClick={() => { setText(""); onCommand("compact"); }}><strong>/compact</strong><span>{settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model."}</span></button></div>}
     {attachments.length > 0 && <div className="composer-attachments">{attachments.map((attachment) => <span className="composer-attachment" key={attachment.id}><span className="attachment-icon">{attachment.file.type.startsWith("image/") ? <ImagePlus size={18} /> : <FileText size={18} />}</span><span className="attachment-name">{attachment.file.name}</span><button className="icon-button attachment-remove" type="button" aria-label="Remove attachment" onClick={() => removeAttachment(attachment.id)}><X size={14} /></button></span>)}</div>}
     <div className="composer-line">
       <input ref={fileInput} hidden type="file" multiple accept="image/*,application/pdf,.txt,.md,.csv,.doc,.docx" onChange={(event) => { addFiles(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
@@ -457,12 +496,13 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
     };
     try {
       const adapter = createBrowserAdapter(() => ({ ...settings, systemPrompt }));
-      const context = baseMessages.slice(-MAX_CONTEXT_MESSAGES);
+      const context = visibleMessagesAfterClear(baseMessages).slice(-MAX_CONTEXT_MESSAGES);
+      const estimatedInput = estimatedTokens(`${systemPrompt}\n${context.map(messageText).join("\n")}`);
       const stream = adapter.run({ messages: inflateMessages(context), abortSignal: controller.signal } as never) as AsyncIterable<{ content?: ContentPart[] }>;
       for await (const update of stream) {
         const content = (update.content ?? [])
-          .filter((part) => (part.type === "text" || part.type === "reasoning") && typeof part.text === "string")
-          .map((part) => ({ type: part.type, text: String(part.text) }));
+          .filter((part) => ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string") || (part.type === "data" && part.name === "token_usage" && part.data && typeof part.data === "object"))
+          .map((part) => part.type === "data" ? { type: "data", name: "token_usage", data: part.data } : { type: part.type, text: String(part.text) });
         const streamedLength = content.reduce((total, part) => total + String(part.text ?? "").length, 0);
         nextMessages = nextMessages.map((message) => message.id === assistantId ? { ...message, content, status: { running: true } } : message);
         pendingSnapshot = nextMessages;
@@ -473,7 +513,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
         }
       }
       if (frame) window.cancelAnimationFrame(frame);
-      nextMessages = nextMessages.map((message) => message.id === assistantId ? { ...message, status: undefined } : message);
+      nextMessages = nextMessages.map((message) => message.id === assistantId ? { ...message, content: message.content.some((part) => (part as ContentPart).type === "data" && (part as ContentPart).name === "token_usage") ? message.content : [...message.content, { type: "data", name: "token_usage", data: { inputTokens: estimatedInput, outputTokens: estimatedTokens(messageText(message)) } }], status: undefined } : message);
       onSnapshot(chat.id, nextMessages, [assistantId]);
     } catch (error) {
       const stopped = error instanceof DOMException && error.name === "AbortError";
@@ -491,11 +531,31 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
     }
   }, [chat.id, onSnapshot, settings, systemPrompt]);
 
+  const clearConversation = useCallback(() => {
+    if (isRunning) return;
+    const marker: SavedMessage = { id: newId("clear"), role: "system", content: [{ type: "clear-boundary" }], createdAt: new Date().toISOString(), status: { clearBoundary: true } };
+    onSnapshot(chat.id, [...chat.messages, marker], [marker.id]);
+  }, [chat.id, chat.messages, isRunning, onSnapshot]);
+
+  const compactConversation = useCallback(() => {
+    if (isRunning) return;
+    const now = new Date().toISOString();
+    const marker: SavedMessage = { id: newId("clear"), role: "system", content: [{ type: "clear-boundary" }], createdAt: now, status: { clearBoundary: true } };
+    const compacted: SavedMessage = { id: newId("compact"), role: "user", content: [{ type: "text", text: compactContext(chat.messages, systemPrompt) }], createdAt: now, status: { compactedContext: true } };
+    const acknowledged: SavedMessage = { id: newId("compact-ack"), role: "assistant", content: [{ type: "text", text: settings.language === "zh" ? "收到。我会把这份压缩上下文作为后续对话的基础。" : "Got it. I’ll use this compacted context as the basis for the rest of this conversation." }, { type: "data", name: "token_usage", data: { inputTokens: 0, outputTokens: 0 } }], createdAt: now, status: { staticCompact: true } };
+    onSnapshot(chat.id, [...chat.messages, marker, compacted, acknowledged], [marker.id, compacted.id, acknowledged.id]);
+  }, [chat.id, chat.messages, isRunning, onSnapshot, settings.language, systemPrompt]);
+
   const send = useCallback(async (text: string, attachments: DraftAttachment[]) => {
+    if (!attachments.length) {
+      const command = text.trim().toLocaleLowerCase();
+      if (command === "/clear") { clearConversation(); return; }
+      if (command === "/compact") { compactConversation(); return; }
+    }
     const savedAttachments = await Promise.all(attachments.map(async (attachment) => savedAttachmentFromDraft(attachment, await toDataUrl(attachment.file))));
     const user: SavedMessage = { id: newId("user"), role: "user", content: text ? [{ type: "text", text }] : [], attachments: savedAttachments, createdAt: new Date().toISOString() };
     await run([...chat.messages, user]);
-  }, [chat.messages, run]);
+  }, [chat.messages, clearConversation, compactConversation, run]);
 
   useEffect(() => {
     const pending = chat.messages.at(-1);
@@ -536,9 +596,15 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
   };
 
   const cancel = () => abortRef.current?.abort();
+  const clearBoundary = chat.messages.map((message) => message.content.some((part) => (part as ContentPart).type === "clear-boundary")).lastIndexOf(true);
+  const displayedMessages = clearBoundary < 0 ? chat.messages : chat.messages.slice(clearBoundary);
+  const undoClear = () => {
+    if (clearBoundary < 0 || clearBoundary !== chat.messages.length - 1) return;
+    onSnapshot(chat.id, chat.messages.slice(0, clearBoundary));
+  };
   const empty = chat.messages.length === 0;
   return <div className="thread-root">
-    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><p>{copy.mistakes}</p></footer></>}
+    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{displayedMessages.map((message, displayIndex) => { const index = clearBoundary < 0 ? displayIndex : clearBoundary + displayIndex; return <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />; })}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><p>{copy.mistakes}</p></footer></>}
   </div>;
 }
 
@@ -723,6 +789,7 @@ function FeedbackDialog({ target, onClose }: { target: FeedbackTarget | null; on
       });
       if (!response.ok) {
         const body = await response.json().catch(() => null) as { error?: string } | null;
+        if (response.status === 404) throw new Error(isChinese ? "反馈服务尚未部署，请稍后再试。" : "The feedback service has not been deployed yet.");
         throw new Error(body?.error || "Feedback could not be sent.");
       }
       setSent(true);
@@ -745,7 +812,7 @@ function InstallDialog({ onClose }: { onClose: () => void }) {
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="install-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Download size={20} /><h2>{isChinese ? "添加 MossChat 到桌面" : "Add MossChat to desktop"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div><MossMark className="app-mark" size={52} /><h3>{isChinese ? "像应用一样打开" : "Open it like an app"}</h3><p>{steps}</p><p>{isChinese ? "添加后可从桌面或应用列表启动，并使用独立窗口。" : "After adding it, open it from your desktop, home screen, or app list in its own window."}</p></div><footer><button className="text-button" type="button" onClick={onClose}>{isChinese ? "完成" : "Done"}</button></footer></section></div>;
 }
 
-function SyncConfigEditor({ config, onChange }: { config: SyncConfig; onChange: (config: Pick<SyncConfig, "endpoint" | "username" | "password" | "passphrase" | "includeKeys">) => void }) {
+function SyncConfigEditor({ config, onChange }: { config: SyncConfig; onChange: (config: Pick<SyncConfig, "endpoint" | "username" | "password" | "deviceName" | "includeKeys">) => void }) {
   const locale = useContext(LocaleContext);
   const serialized = syncConfigJson(config);
   const [value, setValue] = useState(serialized);
@@ -771,8 +838,13 @@ function SyncConfigEditor({ config, onChange }: { config: SyncConfig; onChange: 
 function SyncDialog({ config, onSave, onClose }: { config: SyncConfig; onSave: (config: SyncConfig) => void; onClose: () => void }) {
   const locale = useContext(LocaleContext);
   const [draft, setDraft] = useState(config);
+  const [setupMode, setSetupMode] = useState<"new" | "join" | null>(null);
+  const [generatedPassphrase, setGeneratedPassphrase] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [verification, setVerification] = useState<{ ok: boolean; text: string } | null>(null);
   const { copied, copyText, copiedLabel } = useCopyFeedback();
   const isChinese = locale === "zh";
+  const existingSync = config.passphraseInitialized;
   const origin = typeof window === "undefined" ? "https://yourapp.com" : window.location.origin;
   const caddyfile = `{
   order respond before basicauth
@@ -887,8 +959,57 @@ Only after every verification check passes, print exactly these blocks in this o
 
 If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix it, explain what remains broken and do not print a configuration block.`;
   const copy = (value: string, id = "sync") => void copyText(value, id);
-  const save = () => { onSave({ ...draft, endpoint: draft.endpoint.trim() }); };
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "配置同步" : "Configure sync"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div className="sync-dialog-body"><section className="sync-fields"><SyncConfigEditor config={draft} onChange={(imported) => setDraft((current) => ({ ...current, ...imported }))} /><label>{isChinese ? "WebDAV endpoint" : "WebDAV endpoint"}<input type="url" autoComplete="url" placeholder="https://sync.example.com/sync/" value={draft.endpoint} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value })} /></label><div className="two-fields"><label>{isChinese ? "用户名" : "Username"}<input autoComplete="username" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /></label><label>{isChinese ? "WebDAV 密码" : "WebDAV password"}<input type="password" autoComplete="current-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /></label></div><label>{isChinese ? "加密口令" : "Encryption passphrase"}<input type="password" autoComplete="new-password" value={draft.passphrase} onChange={(event) => setDraft({ ...draft, passphrase: event.target.value })} /></label><p>{isChinese ? "口令在上传前派生加密密钥。它和 WebDAV 凭据只保留在此浏览器，以便下次打开时自动同步。" : "The passphrase derives the encryption key before upload. It and the WebDAV credentials stay in this browser so sync can run on the next visit."}</p><label className="sync-toggle"><input type="checkbox" checked={draft.includeKeys} onChange={(event) => setDraft({ ...draft, includeKeys: event.target.checked })} />{isChinese ? "同步 API keys" : "Sync API keys"}</label>{draft.includeKeys && <p className="sync-warning">{isChinese ? "API keys 会先加密再上传。请使用足够长且独特的口令。" : "API keys are encrypted before upload. Use a long, unique passphrase."}</p>}<div className="sync-config-actions"><button type="button" className="text-button" onClick={save}>{isChinese ? "保存配置" : "Save configuration"}</button></div></section><section className="sync-guide"><h3>{isChinese ? "同步教程" : "Sync server guide"}</h3><p>{isChinese ? "需要 HTTPS，且 OPTIONS 必须在 Basic Auth 之前返回 204。" : "Use HTTPS. OPTIONS must return 204 before Basic Auth runs."}</p><details open><summary>{isChinese ? "给人的 Caddy 配置" : "Caddy setup"}</summary><pre>{caddyfile}</pre><button className={copied === "caddy" ? "is-copied" : ""} type="button" onClick={() => copy(caddyfile, "caddy")}>{copied === "caddy" ? copiedLabel : (isChinese ? "复制 Caddyfile" : "Copy Caddyfile")}</button></details><details><summary>{isChinese ? "给 Agent 的一键配置任务" : "One click task for an agent"}</summary><p>{isChinese ? "内容包括 Cloudflare Tunnel 优先、Docker 或 Caddy 回退、最后使用 Tailscale、验证和可直接导入的配置结果。" : "Uses an existing Cloudflare Tunnel first, then Docker or Caddy, and Tailscale only as a final fallback."}</p><pre className="agent-task-preview">{agentTask}</pre><button className={copied === "agent" ? "is-copied" : ""} type="button" onClick={() => copy(agentTask, "agent")}>{copied === "agent" ? copiedLabel : (isChinese ? "复制 Agent 任务" : "Copy agent task")}</button></details></section></div></section></div>;
+  const generate = () => {
+    const passphrase = generatePassphrase();
+    setDraft((current) => ({ ...current, passphrase }));
+    setGeneratedPassphrase(passphrase);
+  };
+  const check = async () => {
+    setChecking(true);
+    setVerification(null);
+    try {
+      const result = await verifyWebDavSync(draft);
+      setVerification({ ok: true, text: result.state === "empty" ? (isChinese ? "连接有效。服务器目前为空。" : "Connection is valid. The server is currently empty.") : (isChinese ? `连接、凭据和加密口令有效。已找到 ${result.records} 条同步记录。` : `Connection, credentials, and passphrase are valid. Found ${result.records} sync records.`) });
+    } catch (error) { setVerification({ ok: false, text: error instanceof Error ? error.message : (isChinese ? "检测失败。" : "Verification failed.") }); }
+    finally { setChecking(false); }
+  };
+  const rebuild = () => { setDraft((current) => ({ ...current, passphrase: "", passphraseInitialized: false })); setGeneratedPassphrase(null); setSetupMode("new"); setVerification(null); };
+  const save = () => { onSave({ ...draft, endpoint: draft.endpoint.trim(), passphraseInitialized: true }); setGeneratedPassphrase(null); onClose(); };
+  if (!existingSync && !setupMode) return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-dialog sync-setup-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "配置同步" : "Configure sync"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div className="sync-setup-choice"><h3>{isChinese ? "你想怎么开始？" : "How would you like to start?"}</h3><button type="button" onClick={() => setSetupMode("new")}><strong>{isChinese ? "我是第一次设置" : "I’m setting up for the first time"}</strong><span>{isChinese ? "创建新的本地加密口令和同步服务器。" : "Create a new local encryption passphrase and sync server."}</span></button><button type="button" onClick={() => setSetupMode("join")}><strong>{isChinese ? "我要把设备加入已有的同步" : "Join an existing sync"}</strong><span>{isChinese ? "填入已有服务器信息和首次保存的加密口令。" : "Enter the existing server details and the passphrase saved during first setup."}</span></button></div></section></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}>
+    <section className="sync-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+      <header><div><Cloud size={20} /><h2>{isChinese ? "配置同步" : "Configure sync"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header>
+      <div className="sync-dialog-body">
+        <section className="sync-fields">
+          <SyncConfigEditor config={draft} onChange={(imported) => setDraft((current) => ({ ...current, ...imported }))} />
+          <label>{isChinese ? "WebDAV endpoint" : "WebDAV endpoint"}<input type="url" autoComplete="url" placeholder="https://sync.example.com/sync/" value={draft.endpoint} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value })} /></label>
+          <div className="two-fields"><label>{isChinese ? "用户名" : "Username"}<input autoComplete="username" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /></label><label>{isChinese ? "WebDAV 密码" : "WebDAV password"}<input type="password" autoComplete="current-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /></label></div>
+          <label>{isChinese ? "设备名称" : "Device name"}<input autoComplete="off" placeholder={isChinese ? "例如 work-laptop" : "e.g. work-laptop"} value={draft.deviceName} onChange={(event) => setDraft({ ...draft, deviceName: event.target.value })} /></label>
+          {existingSync ? <section className="sync-existing"><strong>{isChinese ? "已有同步" : "Existing sync"}</strong><p>{isChinese ? "加密口令已锁定在此浏览器。可检测连接有效性；如需换口令，请重建同步并使用新的空服务器目录。" : "The passphrase is locked in this browser. Check validity here; rebuild sync with a new empty server directory to change it."}</p><button type="button" onClick={() => void check()} disabled={checking}>{checking ? (isChinese ? "检测中…" : "Checking…") : (isChinese ? "检测有效性" : "Check validity")}</button><button type="button" className="sync-rebuild-button" onClick={rebuild}>{isChinese ? "重建同步" : "Rebuild sync"}</button>{verification && <p className={verification.ok ? "sync-verify-ok" : "sync-import-error"}>{verification.text}</p>}</section> : <section className="sync-first"><strong>{setupMode === "join" ? (isChinese ? "加入已有同步" : "Join existing sync") : (isChinese ? "第一次设置" : "First-time setup")}</strong><p>{setupMode === "join" ? (isChinese ? "填入已有服务器首次保存的加密口令。它只会保存在此浏览器，之后会锁定。" : "Enter the passphrase saved during first setup. It is stored only in this browser and locks after saving.") : (isChinese ? "可手动设置加密口令，也可让 MossChat 本地生成。口令可以为空，但这会降低数据保护。" : "Set a passphrase yourself or generate one locally. It may be empty, but that reduces data protection.")}</p><label>{isChinese ? "加密口令" : "Encryption passphrase"}<input type="password" autoComplete="new-password" value={draft.passphrase} onChange={(event) => { setDraft({ ...draft, passphrase: event.target.value }); setGeneratedPassphrase(null); }} /></label>{setupMode === "new" && <button type="button" onClick={generate}>{isChinese ? "生成加密口令" : "Generate passphrase"}</button>}{generatedPassphrase && <><code>{generatedPassphrase}</code><button type="button" className={copied === "passphrase" ? "is-copied" : ""} onClick={() => copy(generatedPassphrase, "passphrase")}>{copied === "passphrase" ? copiedLabel : (isChinese ? "复制口令" : "Copy passphrase")}</button></>}</section>}
+          <label className="sync-toggle"><input type="checkbox" checked={draft.includeKeys} onChange={(event) => setDraft({ ...draft, includeKeys: event.target.checked })} />{isChinese ? "同步 API keys" : "Sync API keys"}</label>
+          {draft.includeKeys && <p className="sync-warning">{isChinese ? "API keys 会先加密再上传。请使用足够长且独特的口令。" : "API keys are encrypted before upload. Use a long, unique passphrase."}</p>}
+          <div className="sync-config-actions"><button type="button" className="text-button" onClick={save}>{isChinese ? "保存配置" : "Save configuration"}</button></div>
+        </section>
+        <section className="sync-guide"><h3>{isChinese ? "同步教程" : "Sync server guide"}</h3><p>{isChinese ? "需要 HTTPS，且 OPTIONS 必须在 Basic Auth 之前返回 204。" : "Use HTTPS. OPTIONS must return 204 before Basic Auth runs."}</p><details open><summary>{isChinese ? "给人的 Caddy 配置" : "Caddy setup"}</summary><pre>{caddyfile}</pre><button className={copied === "caddy" ? "is-copied" : ""} type="button" onClick={() => copy(caddyfile, "caddy")}>{copied === "caddy" ? copiedLabel : (isChinese ? "复制 Caddyfile" : "Copy Caddyfile")}</button></details><details><summary>{isChinese ? "给 Agent 的一键配置任务" : "One click task for an agent"}</summary><p>{isChinese ? "内容包括 Cloudflare Tunnel 优先、Docker 或 Caddy 回退、最后使用 Tailscale、验证和可直接导入的配置结果。" : "Uses an existing Cloudflare Tunnel first, then Docker or Caddy, and Tailscale only as a final fallback."}</p><pre className="agent-task-preview">{agentTask}</pre><button className={copied === "agent" ? "is-copied" : ""} type="button" onClick={() => copy(agentTask, "agent")}>{copied === "agent" ? copiedLabel : (isChinese ? "复制 Agent 任务" : "Copy agent task")}</button></details></section>
+      </div>
+    </section>
+  </div>;
+}
+
+function SyncReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncResolution) => void }) {
+  const locale = useContext(LocaleContext);
+  const isChinese = locale === "zh";
+  const [preview, setPreview] = useState(false);
+  const [choicesOpen, setChoicesOpen] = useState(false);
+  const range = (first: string | null, last: string | null) => !first || !last ? "—" : `${new Intl.DateTimeFormat(isChinese ? "zh-CN" : "en-US", { year: "numeric", month: "short" }).format(new Date(first))} ${isChinese ? "至" : "to"} ${new Intl.DateTimeFormat(isChinese ? "zh-CN" : "en-US", { year: "numeric", month: "short" }).format(new Date(last))}`;
+  const label = (value: SyncInspection["local"]) => ({ chats: value.chats.toLocaleString(), messages: value.messages.toLocaleString(), range: range(value.firstUpdatedAt, value.lastUpdatedAt) });
+  const local = label(inspection.local);
+  const remote = label(inspection.remote);
+  const common = { chats: inspection.common.chats.toLocaleString(), messages: inspection.common.messages.toLocaleString() };
+  const serverId = inspection.serverId ? `${inspection.serverId.slice(0, 12)}…` : "—";
+  if (inspection.state === "missing-meta") return <div className="modal-backdrop"><section className="sync-review-dialog" role="dialog" aria-modal="true"><header><div><Cloud size={20} /><h2>{isChinese ? "无法安全读取此服务器" : "This server cannot be read safely"}</h2></div></header><div className="sync-review-body"><p>{isChinese ? "服务器上已有同步记录，但缺少 MossChat 的 meta.json。为了避免用新的加密密钥覆盖已有数据，应用不会写入此服务器。" : "This server contains sync records but no MossChat meta.json. MossChat will not write to it with a new encryption key."}</p><p className="sync-review-warning">{isChinese ? "请恢复该服务器原有的 meta.json，或在确认文件可丢弃后使用一个新的空目录。" : "Restore the original meta.json, or use a new empty directory after confirming these files can be discarded."}</p></div><footer><button type="button" className="text-button" onClick={onClose}>{isChinese ? "关闭" : "Close"}</button></footer></section></div>;
+  if (inspection.state === "empty") return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-review-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "这是一个空同步服务器" : "This sync server is empty"}</h2></div></header><div className="sync-review-body"><p>{isChinese ? "首次上传会创建不加密的 meta.json，其中只包含服务器 ID、盐、版本和创建时间。会话内容仍会先加密。" : "The first upload creates an unencrypted meta.json with only a server ID, salt, schema, and creation time. Conversations remain encrypted."}</p><dl className="sync-review-summary"><div><dt>{isChinese ? "本地会话" : "Local chats"}</dt><dd>{local.chats}</dd></div><div><dt>{isChinese ? "本地消息" : "Local messages"}</dt><dd>{local.messages}</dd></div><div><dt>{isChinese ? "时间范围" : "Time range"}</dt><dd>{local.range}</dd></div></dl></div><footer><button type="button" className="sync-review-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={() => onResolve("merge")}>{isChinese ? "上传本地数据" : "Upload local data"}</button></footer></section></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-review-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "这个服务器上已有数据" : "This server already has data"}</h2></div></header><div className="sync-review-body"><p>{isChinese ? `服务器 ID ${serverId}${inspection.previousServerId && inspection.previousServerId !== inspection.serverId ? "，与上次同步的服务器不同。" : "。"}` : `Server ID ${serverId}${inspection.previousServerId && inspection.previousServerId !== inspection.serverId ? ", different from the last synced server." : "."}`}</p>{inspection.remoteLastWrite && <p>{isChinese ? "最后写入" : "Last write"} {new Date(inspection.remoteLastWrite.at).toLocaleString(isChinese ? "zh-CN" : "en-US")} · {inspection.remoteLastWrite.deviceName !== "Unknown device" ? inspection.remoteLastWrite.deviceName : inspection.remoteLastWrite.deviceId.slice(0, 12)}</p>}<table className="sync-review-table"><thead><tr><th></th><th>{isChinese ? "本地" : "Local"}</th><th>{isChinese ? "服务器" : "Server"}</th><th>{isChinese ? "共有" : "Shared"}</th></tr></thead><tbody><tr><th>{isChinese ? "会话" : "Chats"}</th><td>{local.chats}</td><td>{remote.chats}</td><td>{common.chats}</td></tr><tr><th>{isChinese ? "消息" : "Messages"}</th><td>{local.messages}</td><td>{remote.messages}</td><td>{common.messages}</td></tr><tr><th>{isChinese ? "时间范围" : "Time range"}</th><td>{local.range}</td><td>{remote.range}</td><td>—</td></tr></tbody></table>{inspection.common.chats === 0 && inspection.common.messages === 0 && <p className="sync-review-warning">{isChinese ? "没有任何共同记录。这看起来是两份互不相关的数据。" : "There are no shared records. These look like two unrelated data sets."}</p>}{inspection.conflicts > 0 && <p className="sync-review-warning">{isChinese ? `${inspection.conflicts} 条同 ID 记录内容不同。请选择冲突处理方式。` : `${inspection.conflicts} matching records have different content. Choose how to handle conflicts.`}</p>}{preview && <section className="sync-readonly-preview"><strong>{isChinese ? "只读预览，尚未写入任何数据" : "Read-only preview. Nothing has been written."}</strong>{inspection.remoteChats.length ? <ul>{inspection.remoteChats.map((chat) => <li key={chat.id}><span>{chat.title}</span><time>{shortDate(chat.updatedAt, locale)}</time></li>)}</ul> : <p>{isChinese ? "服务器中没有可预览的会话标题。" : "There are no chat titles to preview on this server."}</p>}</section>}{choicesOpen && <div className="sync-resolution-options"><button type="button" onClick={() => onResolve("merge")}>{isChinese ? "合并两边的新数据" : "Merge new data from both sides"}</button><button type="button" onClick={() => onResolve("prefer-local")}>{isChinese ? "冲突时保留本地版本" : "Keep local versions for conflicts"}</button><button type="button" onClick={() => onResolve("prefer-remote")}>{isChinese ? "冲突时保留服务器版本" : "Keep server versions for conflicts"}</button></div>}</div><footer><button type="button" className="sync-review-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button><button type="button" className="sync-review-preview" onClick={() => setPreview((value) => !value)}>{preview ? (isChinese ? "收起预览" : "Hide preview") : (isChinese ? "只读预览" : "Read-only preview")}</button>{inspection.conflicts ? <button type="button" className="text-button" onClick={() => setChoicesOpen((value) => !value)}>{isChinese ? "选择处理方式" : "Choose handling"}</button> : <button type="button" className="text-button" onClick={() => onResolve("merge")}>{isChinese ? "合并数据" : "Merge data"}</button>}</footer></section></div>;
 }
 
 function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRename, onDelete }: { notebook: Notebook; chats: Chat[]; onBack: () => void; onCreateChat: () => void; onOpenChat: (chatId: string) => void; onRename: (title: string) => void; onDelete: () => void }) {
@@ -936,6 +1057,7 @@ export default function Home() {
   const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "error" | "done">("idle");
   const [syncMessage, setSyncMessage] = useState("");
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+  const [syncReview, setSyncReview] = useState<SyncInspection | null>(null);
   const [syncNow, setSyncNow] = useState(() => Date.now());
   const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [installed, setInstalled] = useState(false);
@@ -1013,7 +1135,7 @@ export default function Home() {
     setLastSyncAt(loadLastSyncAt(next));
     autoSyncSignature.current = "";
   };
-  const runSync = useCallback(async () => {
+  const runSync = useCallback(async (resolution?: SyncResolution) => {
     if (!isSyncConfigured(syncConfig) || syncRunning.current) return false;
     const localData = dataRef.current;
     const localSettings = settingsRef.current;
@@ -1021,7 +1143,15 @@ export default function Home() {
     setSyncStatus("syncing");
     setSyncMessage("");
     try {
-      const result = await synchronizeWebDav({ config: syncConfig, data: localData, settings: localSettings });
+      const inspection = await inspectWebDavSync({ config: syncConfig, data: localData, settings: localSettings });
+      if (!resolution && inspection.needsDecision) {
+        setSyncReview(inspection);
+        setSyncStatus("idle");
+        setSyncMessage(settings.language === "zh" ? "请先确认服务器数据的处理方式。" : "Choose how to handle this server before syncing.");
+        return false;
+      }
+      if (inspection.state === "missing-meta") throw new Error(settings.language === "zh" ? "服务器缺少 meta.json，无法安全同步。" : "The server is missing meta.json and cannot be synced safely.");
+      const result = await synchronizeWebDav({ config: syncConfig, data: localData, settings: localSettings, ...(resolution ? { resolution } : {}) });
       if (dataRef.current !== localData || settingsRef.current !== localSettings) {
         setSyncStatus("done");
         setLastSyncAt(result.syncedAt);
@@ -1365,7 +1495,7 @@ export default function Home() {
         {!installed && <button className="top-icon pwa-install-button" type="button" title={settings.language === "zh" ? "添加 MossChat 到桌面" : "Add MossChat to desktop"} onClick={() => void installApp()}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
         <div className="top-actions">
           {activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
-          <div className="sync-wrap"><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncReady && <span className="sync-age" aria-live="polite">{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncStatusText}</span>}{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncReady ? "is-ready" : "is-inactive"} ${syncStatus === "error" ? "error" : ""}`}><i />{syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
+          <div className="sync-wrap"><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncReady && <span className="sync-age" aria-live="polite">{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncStatusText}</span>}{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncReady ? "is-ready" : "is-inactive"} ${syncStatus === "error" ? "error" : ""} ${syncStatus === "syncing" ? "is-syncing" : ""}`}><i />{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
           <div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div>
           <button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
         </div>
@@ -1378,6 +1508,7 @@ export default function Home() {
     {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
     {installGuideOpen && <InstallDialog onClose={() => setInstallGuideOpen(false)} />}
     {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
+    {syncReview && <SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={(resolution) => { setSyncReview(null); void runSync(resolution); }} />}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;
 }

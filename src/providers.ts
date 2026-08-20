@@ -11,6 +11,8 @@ type ContentPart = {
   name?: string;
   response?: unknown;
   callId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
 };
 
 type NativeFunctionDeclaration = {
@@ -34,6 +36,7 @@ type WireMessage = {
 const trimSlash = (url: string) => url.replace(/\/+$/, "");
 
 const isOpenRouter = (baseUrl: string) => /(^|\.)openrouter\.ai(?:\/|$)/i.test(trimSlash(baseUrl).replace(/^https?:\/\//, ""));
+const supportsOpenAiUsageStream = (baseUrl: string) => isOpenRouter(baseUrl) || /^https:\/\/api\.openai\.com(?:\/|$)/i.test(trimSlash(baseUrl));
 
 const thinkingBudget = (settings: AppSettings): number | null => {
   if (settings.thinkingLevel === "custom") return settings.thinkingBudget > 0 ? settings.thinkingBudget : null;
@@ -63,6 +66,16 @@ const textFromUnknown = (value: unknown): string => {
   }
   return "";
 };
+
+const tokenValue = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : undefined;
+
+function tokenUsage(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const usage = value as Record<string, unknown>;
+  const input = tokenValue(usage.input_tokens) ?? tokenValue(usage.prompt_tokens) ?? tokenValue(usage.promptTokenCount) ?? tokenValue(usage.inputTokens);
+  const output = tokenValue(usage.output_tokens) ?? tokenValue(usage.completion_tokens) ?? tokenValue(usage.candidatesTokenCount) ?? tokenValue(usage.outputTokens);
+  return input === undefined && output === undefined ? null : { input, output };
+}
 
 const reasoningFromDetails = (value: unknown): string => {
   if (!Array.isArray(value)) return "";
@@ -314,6 +327,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           body: JSON.stringify({
             model: provider.model,
             stream: true,
+            ...(supportsOpenAiUsageStream(provider.baseUrl) ? { stream_options: { include_usage: true } } : {}),
             messages: [
               ...(settings.systemPrompt.trim() ? [{ role: "system", content: settings.systemPrompt.trim() }] : []),
               ...openAiMessages(messages),
@@ -364,10 +378,13 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
 
       let fullText = "";
       let fullReasoning = "";
+      let inputTokens: number | undefined;
+      let outputTokens: number | undefined;
       const snapshot = () => ({
         content: [
           ...(fullReasoning ? [{ type: "reasoning" as const, text: fullReasoning }] : []),
           ...(fullText ? [{ type: "text" as const, text: fullText }] : []),
+          ...(inputTokens === undefined && outputTokens === undefined ? [] : [{ type: "data" as const, name: "token_usage", data: { ...(inputTokens === undefined ? {} : { inputTokens }), ...(outputTokens === undefined ? {} : { outputTokens }) } }]),
         ],
       });
       const append = (value: string) => {
@@ -376,6 +393,13 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       };
       const appendReasoning = (value: string) => {
         fullReasoning += value;
+        return snapshot();
+      };
+      const updateUsage = (value: unknown) => {
+        const usage = tokenUsage(value);
+        if (!usage) return null;
+        if (usage.input !== undefined) inputTokens = usage.input;
+        if (usage.output !== undefined) outputTokens = usage.output;
         return snapshot();
       };
       const openAiCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
@@ -394,6 +418,8 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
 
       for await (const data of parseSseEvents(response)) {
         if (provider.kind === "openai") {
+          const usageUpdate = updateUsage(data.usage ?? (data.response as Record<string, unknown> | undefined)?.usage);
+          if (usageUpdate) { yield usageUpdate; continue; }
           const responseEvent = typeof data.type === "string" ? data.type : "";
           if (responseEvent === "response.reasoning_text.delta" || responseEvent === "response.reasoning_summary_text.delta") {
             const delta = textFromUnknown(data.delta);
@@ -433,6 +459,8 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
 
         if (provider.kind === "anthropic") {
           const eventType = data.type;
+          const usageUpdate = updateUsage(eventType === "message_start" ? (data.message as Record<string, unknown> | undefined)?.usage : data.usage);
+          if (usageUpdate) yield usageUpdate;
           const index = typeof data.index === "number" ? data.index : 0;
           if (eventType === "content_block_start") {
             const block = data.content_block as { type?: string; id?: string; name?: string; input?: unknown; thinking?: string } | undefined;
@@ -461,6 +489,8 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           continue;
         }
 
+        const usageUpdate = updateUsage(data.usageMetadata);
+        if (usageUpdate) yield usageUpdate;
         const candidate = (data.candidates as Array<{ content?: { parts?: Array<Record<string, unknown>> } }> | undefined)?.[0];
         const parts = candidate?.content?.parts ?? [];
         const reasoning = parts.map(googlePartReasoning).filter(Boolean).join("");

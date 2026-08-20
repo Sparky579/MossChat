@@ -4,6 +4,7 @@ const CONFIG_KEY = "mosschat.webdav.sync.v1";
 const INDEX_PREFIX = "mosschat.webdav.sync.index.v2";
 const CLOCK_PREFIX = "mosschat.webdav.sync.clock.v1";
 const LAST_SYNC_PREFIX = "mosschat.webdav.sync.last-success.v1";
+const SERVER_ID_PREFIX = "mosschat.webdav.sync.server-id.v1";
 const META_FILE = "meta.json";
 const ITERATIONS = 600_000;
 const MAX_SYNC_IMAGE_EDGE = 2048;
@@ -13,33 +14,42 @@ export type SyncConfig = {
   username: string;
   password: string;
   passphrase: string;
+  passphraseInitialized: boolean;
   deviceId: string;
+  deviceName: string;
   includeKeys: boolean;
 };
 
-type SyncConfigPayload = { endpoint?: unknown; url?: unknown; username?: unknown; password?: unknown; protocol?: unknown; path?: unknown; passphrase?: unknown; includeKeys?: unknown };
+type SyncConfigPayload = { endpoint?: unknown; url?: unknown; username?: unknown; password?: unknown; protocol?: unknown; path?: unknown; deviceName?: unknown; includeKeys?: unknown };
+type SyncMeta = { serverId: string; salt: string; schema: 1; createdAt: string };
 type EncryptedEnvelope = { v: 1; iv: string; data: string };
-type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown; clock?: number; deviceId?: string };
+type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown; clock?: number; deviceId?: string; deviceName?: string };
 /** Only sync metadata is kept locally: no chat body, attachment bytes, or encrypted record cache. */
 type SyncIndexEntry = { hash: string; clock: number; deviceId: string };
 type SyncIndex = Record<string, SyncIndexEntry>;
 
-export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", deviceId: crypto.randomUUID(), includeKeys: false });
+export type SyncResolution = "merge" | "prefer-local" | "prefer-remote";
+export type SyncSummary = { chats: number; messages: number; notebooks: number; firstUpdatedAt: string | null; lastUpdatedAt: string | null };
+export type SyncInspection = { state: "empty" | "ready" | "missing-meta"; serverId: string | null; previousServerId: string | null; createdAt: string | null; local: SyncSummary; remote: SyncSummary; common: Pick<SyncSummary, "chats" | "messages" | "notebooks">; conflicts: number; remoteLastWrite: { at: string; deviceId: string; deviceName: string } | null; remoteChats: Array<{ id: string; title: string; updatedAt: string }>; needsDecision: boolean };
+export type SyncVerification = { state: "empty" | "ready"; serverId: string | null; records: number };
+
+export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", passphraseInitialized: false, deviceId: crypto.randomUUID(), deviceName: "", includeKeys: false });
 
 export function loadSyncConfig(): SyncConfig {
   try {
     const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}") as Partial<SyncConfig>;
-    return { ...emptySyncConfig(), ...parsed, endpoint: String(parsed.endpoint ?? "").trim(), username: String(parsed.username ?? ""), password: String(parsed.password ?? ""), passphrase: String(parsed.passphrase ?? ""), deviceId: String(parsed.deviceId ?? crypto.randomUUID()), includeKeys: parsed.includeKeys === true };
+    const passphrase = String(parsed.passphrase ?? "");
+    return { ...emptySyncConfig(), ...parsed, endpoint: String(parsed.endpoint ?? "").trim(), username: String(parsed.username ?? ""), password: String(parsed.password ?? ""), passphrase, passphraseInitialized: parsed.passphraseInitialized === true || Boolean(passphrase), deviceId: String(parsed.deviceId ?? crypto.randomUUID()), deviceName: String(parsed.deviceName ?? ""), includeKeys: parsed.includeKeys === true };
   } catch { return emptySyncConfig(); }
 }
 
 export function saveSyncConfig(config: SyncConfig) { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); }
-export function isSyncConfigured(config: SyncConfig) { return Boolean(config.endpoint && config.username && config.password && config.passphrase); }
+export function isSyncConfigured(config: SyncConfig) { return Boolean(config.endpoint && config.username && config.password && config.passphraseInitialized); }
 
 /** Reads raw SYNC_CONFIG JSON or the optional ===SYNC_CONFIG_*=== wrapper. */
-export function parseSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "username" | "password" | "passphrase" | "includeKeys"> {
+export function parseSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "username" | "password" | "deviceName" | "includeKeys"> {
   const trimmed = value.trim();
-  if (!trimmed || trimmed === "{}") return { endpoint: "", username: "", password: "", passphrase: "", includeKeys: false };
+  if (!trimmed || trimmed === "{}") return { endpoint: "", username: "", password: "", deviceName: "", includeKeys: false };
   const match = trimmed.match(/===SYNC_CONFIG_START===\s*([\s\S]*?)\s*===SYNC_CONFIG_END===/);
   let parsed: SyncConfigPayload;
   try { parsed = JSON.parse(match?.[1] ?? trimmed) as SyncConfigPayload; } catch { throw new Error("SYNC_CONFIG must contain valid JSON."); }
@@ -60,14 +70,14 @@ export function parseSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "u
     if (!joined.pathname.endsWith("/")) joined.pathname += "/";
     endpoint = joined.href;
   }
-  for (const [name, field] of [["username", parsed.username], ["password", parsed.password], ["passphrase", parsed.passphrase]] as const) {
+  for (const [name, field] of [["username", parsed.username], ["password", parsed.password], ["deviceName", parsed.deviceName]] as const) {
     if (field !== undefined && typeof field !== "string") throw new Error(`SYNC_CONFIG ${name} must be a string.`);
   }
   if (parsed.includeKeys !== undefined && typeof parsed.includeKeys !== "boolean") throw new Error("SYNC_CONFIG includeKeys must be true or false.");
-  return { endpoint, username: typeof parsed.username === "string" ? parsed.username : "", password: typeof parsed.password === "string" ? parsed.password : "", passphrase: typeof parsed.passphrase === "string" ? parsed.passphrase : "", includeKeys: parsed.includeKeys === true };
+  return { endpoint, username: typeof parsed.username === "string" ? parsed.username : "", password: typeof parsed.password === "string" ? parsed.password : "", deviceName: typeof parsed.deviceName === "string" ? parsed.deviceName : "", includeKeys: parsed.includeKeys === true };
 }
 
-export function syncConfigJson(config: Pick<SyncConfig, "endpoint" | "username" | "password" | "passphrase" | "includeKeys">) {
+export function syncConfigJson(config: Pick<SyncConfig, "endpoint" | "username" | "password" | "deviceName" | "includeKeys">) {
   const value: Record<string, string | boolean> = {};
   const endpoint = config.endpoint.trim();
   if (endpoint) {
@@ -83,7 +93,7 @@ export function syncConfigJson(config: Pick<SyncConfig, "endpoint" | "username" 
     if (config.username) value.username = config.username;
     if (config.password) value.password = config.password;
   }
-  if (config.passphrase) value.passphrase = config.passphrase;
+  if (config.deviceName) value.deviceName = config.deviceName;
   if (config.includeKeys) value.includeKeys = true;
   return JSON.stringify(value, null, 2);
 }
@@ -92,6 +102,7 @@ function configScope(config: SyncConfig) { return `${config.deviceId}:${config.e
 function indexKey(config: SyncConfig) { return `${INDEX_PREFIX}:${configScope(config)}`; }
 function clockKey(config: SyncConfig) { return `${CLOCK_PREFIX}:${configScope(config)}`; }
 function lastSyncKey(config: SyncConfig) { return `${LAST_SYNC_PREFIX}:${configScope(config)}`; }
+function serverIdKey(config: SyncConfig) { return `${SERVER_ID_PREFIX}:${configScope(config)}`; }
 
 function loadIndex(config: SyncConfig): SyncIndex {
   try {
@@ -105,6 +116,8 @@ function loadClock(config: SyncConfig) { return Math.max(0, Number(localStorage.
 function saveClock(config: SyncConfig, clock: number) { localStorage.setItem(clockKey(config), String(clock)); }
 export function loadLastSyncAt(config: SyncConfig) { return localStorage.getItem(lastSyncKey(config)) || null; }
 function saveLastSyncAt(config: SyncConfig, value: string) { localStorage.setItem(lastSyncKey(config), value); }
+function loadRememberedServerId(config: SyncConfig) { return localStorage.getItem(serverIdKey(config)) || null; }
+function saveRememberedServerId(config: SyncConfig, serverId: string) { localStorage.setItem(serverIdKey(config), serverId); }
 
 const bytesToBase64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 const base64ToBytes = (value: string) => Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
@@ -128,18 +141,48 @@ async function request(config: SyncConfig, path: string, init: RequestInit = {})
   return fetch(`${normalizedEndpoint(config.endpoint)}${path}`, { ...init, headers: { Authorization: authorization(config), ...(init.headers ?? {}) }, credentials: "omit" });
 }
 
-async function getSalt(config: SyncConfig) {
+function newServerId() { return `srv_${crypto.randomUUID().replace(/-/g, "")}`; }
+
+async function putMeta(config: SyncConfig, meta: SyncMeta) {
+  const response = await request(config, META_FILE, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) });
+  if (!response.ok) throw new Error(`Could not save sync metadata (${response.status}).`);
+}
+
+async function readMeta(config: SyncConfig): Promise<SyncMeta | null> {
   const current = await request(config, META_FILE);
   if (current.ok) {
-    const meta = await current.json() as { salt?: string; version?: number };
-    if (meta.version === 1 && typeof meta.salt === "string") return base64ToBytes(meta.salt);
-    throw new Error("The sync endpoint has an unsupported metadata file.");
+    const source = await current.json() as { serverId?: unknown; salt?: unknown; schema?: unknown; version?: unknown; createdAt?: unknown };
+    const schema = source.schema ?? source.version;
+    if (schema !== 1 || typeof source.salt !== "string") throw new Error("The sync endpoint has an unsupported metadata file.");
+    const meta: SyncMeta = { serverId: typeof source.serverId === "string" ? source.serverId : "", salt: source.salt, schema: 1, createdAt: typeof source.createdAt === "string" ? source.createdAt : new Date().toISOString() };
+    try { base64ToBytes(meta.salt); } catch { throw new Error("The sync endpoint metadata has an invalid salt."); }
+    return meta;
   }
-  if (current.status !== 404) throw new Error(`Could not read sync metadata (${current.status}).`);
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  const created = await request(config, META_FILE, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ version: 1, salt: bytesToBase64(salt) }) });
-  if (!created.ok) throw new Error(`Could not create sync metadata (${created.status}).`);
-  return salt;
+  if (current.status === 404) return null;
+  throw new Error(`Could not read sync metadata (${current.status}).`);
+}
+
+async function ensureMeta(config: SyncConfig) {
+  const existing = await readMeta(config);
+  if (existing) {
+    if (existing.serverId) return existing;
+    const upgraded = { ...existing, serverId: newServerId() };
+    await putMeta(config, upgraded);
+    return upgraded;
+  }
+  return createMeta(config);
+}
+
+async function createMeta(config: SyncConfig) {
+  const meta: SyncMeta = { serverId: newServerId(), salt: bytesToBase64(crypto.getRandomValues(new Uint8Array(16))), schema: 1, createdAt: new Date().toISOString() };
+  await putMeta(config, meta);
+  return meta;
+}
+
+async function getEncryptionMaterial(config: SyncConfig) {
+  const entries = await listEntries(config);
+  const meta = entries.includes(META_FILE) ? await ensureMeta(config) : await createMeta(config);
+  return { meta, salt: base64ToBytes(meta.salt) };
 }
 
 async function encryptionKey(passphrase: string, salt: Uint8Array) {
@@ -247,7 +290,7 @@ function recordClock(record: SyncRecord) {
 }
 
 function normalizedRecord(record: SyncRecord): SyncRecord {
-  return { ...record, clock: recordClock(record), deviceId: typeof record.deviceId === "string" && record.deviceId ? record.deviceId : "legacy" };
+  return { ...record, clock: recordClock(record), deviceId: typeof record.deviceId === "string" && record.deviceId ? record.deviceId : "legacy", deviceName: typeof record.deviceName === "string" && record.deviceName.trim() ? record.deviceName.trim().slice(0, 80) : "Unknown device" };
 }
 
 function compareRecords(left: SyncRecord, right: SyncRecord) {
@@ -265,12 +308,12 @@ async function stampLocalRecords(records: SyncRecord[], index: SyncIndex, config
     const hash = await contentHash(record.payload);
     const existing = index[file];
     if (existing?.hash === hash) {
-      stamped.push({ ...record, clock: existing.clock, deviceId: existing.deviceId });
+      stamped.push({ ...record, clock: existing.clock, deviceId: existing.deviceId, deviceName: existing.deviceId === config.deviceId ? (config.deviceName.trim().slice(0, 80) || "This device") : "Unknown device" });
       clock = Math.max(clock, existing.clock);
       continue;
     }
     clock += 1;
-    stamped.push({ ...record, clock, deviceId: config.deviceId });
+    stamped.push({ ...record, clock, deviceId: config.deviceId, deviceName: config.deviceName.trim().slice(0, 80) || "This device" });
   }
   return { records: stamped, clock };
 }
@@ -280,7 +323,7 @@ async function indexRecords(records: SyncRecord[]): Promise<SyncIndex> {
   return Object.fromEntries(entries);
 }
 
-async function listFiles(config: SyncConfig) {
+async function listEntries(config: SyncConfig) {
   const response = await request(config, "", { method: "PROPFIND", headers: { Depth: "1", "Content-Type": "text/xml" }, body: "<?xml version=\"1.0\"?><propfind xmlns=\"DAV:\"><prop><getcontentlength/></prop></propfind>" });
   if (!response.ok && response.status !== 207) throw new Error(`Could not list remote sync records (${response.status}).`);
   const xml = await response.text();
@@ -288,8 +331,10 @@ async function listFiles(config: SyncConfig) {
   const root = new URL(normalizedEndpoint(config.endpoint));
   return Array.from(document.querySelectorAll("response href")).map((node) => node.textContent ?? "").map((href) => {
     try { return decodeURIComponent(new URL(href, root).pathname.split("/").filter(Boolean).at(-1) ?? ""); } catch { return ""; }
-  }).filter((file) => file.endsWith(".bin"));
+  }).filter(Boolean);
 }
+
+async function listFiles(config: SyncConfig) { return (await listEntries(config)).filter((file) => file.endsWith(".bin")); }
 
 async function readRecords(config: SyncConfig, key: CryptoKey, files: string[]) {
   const values = await Promise.all(files.map(async (file) => {
@@ -300,12 +345,13 @@ async function readRecords(config: SyncConfig, key: CryptoKey, files: string[]) 
   return values.filter((value): value is SyncRecord => Boolean(value));
 }
 
-function resolveRecords(local: SyncRecord[], remote: SyncRecord[]) {
+function resolveRecords(local: SyncRecord[], remote: SyncRecord[], resolution: SyncResolution = "merge") {
   const selected = new Map(local.map((record) => [recordFile(record), record]));
   for (const record of remote) {
     const file = recordFile(record);
     const current = selected.get(file);
-    if (!current || compareRecords(record, current) > 0) selected.set(file, record);
+    if (!current) { selected.set(file, record); continue; }
+    if (resolution === "prefer-remote" || (resolution === "merge" && compareRecords(record, current) > 0)) selected.set(file, record);
   }
   const removed = new Set<string>();
   for (const tomb of selected.values()) {
@@ -341,9 +387,81 @@ function settingsForLocal(selected: SyncRecord | undefined, local: AppSettings, 
   return { ...remote, providers: Object.fromEntries(Object.entries(remote.providers).map(([id, provider]) => [id, { ...provider, apiKey: local.providers[id]?.apiKey ?? "" }])) };
 }
 
-export async function synchronizeWebDav({ config, data, settings }: { config: SyncConfig; data: AppData; settings: AppSettings; mode?: "merge" | "upload" }) {
+const emptySummary = (): SyncSummary => ({ chats: 0, messages: 0, notebooks: 0, firstUpdatedAt: null, lastUpdatedAt: null });
+const isContentRecord = (record: SyncRecord) => record.type === "chat" || record.type === "message" || record.type === "notebook";
+
+function summarizeRecords(records: SyncRecord[]): SyncSummary {
+  const summary = emptySummary();
+  for (const record of records) {
+    if (record.type === "chat") summary.chats += 1;
+    if (record.type === "message") summary.messages += 1;
+    if (record.type === "notebook") summary.notebooks += 1;
+    if (!isContentRecord(record) || !record.updatedAt) continue;
+    if (!summary.firstUpdatedAt || record.updatedAt < summary.firstUpdatedAt) summary.firstUpdatedAt = record.updatedAt;
+    if (!summary.lastUpdatedAt || record.updatedAt > summary.lastUpdatedAt) summary.lastUpdatedAt = record.updatedAt;
+  }
+  return summary;
+}
+
+function hasContent(summary: SyncSummary) { return Boolean(summary.chats || summary.messages || summary.notebooks); }
+
+export async function inspectWebDavSync({ config, data, settings }: { config: SyncConfig; data: AppData; settings: AppSettings }): Promise<SyncInspection> {
   if (!isSyncConfigured(config)) throw new Error("Configure endpoint, WebDAV credentials, and passphrase first.");
-  const salt = await getSalt(config);
+  const local = await recordsFor(data, settings, config.includeKeys);
+  const localSummary = summarizeRecords(local.records);
+  const previousServerId = loadRememberedServerId(config);
+  const entries = await listEntries(config);
+  const initialMeta = entries.includes(META_FILE) ? await readMeta(config) : null;
+  if (!initialMeta) {
+    const files = entries.filter((file) => file.endsWith(".bin"));
+    if (files.length) return { state: "missing-meta", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, remoteChats: [], needsDecision: true };
+    return { state: "empty", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, remoteChats: [], needsDecision: true };
+  }
+  const meta = initialMeta.serverId ? initialMeta : await ensureMeta(config);
+  const key = await encryptionKey(config.passphrase, base64ToBytes(meta.salt));
+  const remoteRecords = await readRecords(config, key, entries.filter((file) => file.endsWith(".bin")));
+  const remoteSummary = summarizeRecords(remoteRecords);
+  const localByFile = new Map(local.records.map((record) => [recordFile(record), record]));
+  const common = { chats: 0, messages: 0, notebooks: 0 };
+  let conflicts = 0;
+  for (const remote of remoteRecords) {
+    if (!isContentRecord(remote)) continue;
+    const localRecord = localByFile.get(recordFile(remote));
+    if (!localRecord || !isContentRecord(localRecord)) continue;
+    if (remote.type === "chat") common.chats += 1;
+    if (remote.type === "message") common.messages += 1;
+    if (remote.type === "notebook") common.notebooks += 1;
+    if (await contentHash(localRecord.payload) !== await contentHash(remote.payload)) conflicts += 1;
+  }
+  const remoteContent = remoteRecords.filter(isContentRecord);
+  const newest = remoteContent.reduce<SyncRecord | null>((current, record) => !current || recordClock(record) > recordClock(current) ? record : current, null);
+  const remoteChats = remoteRecords.filter((record) => record.type === "chat").map((record) => ({ id: record.id, title: String((record.payload as Chat).title || "Untitled chat"), updatedAt: record.updatedAt })).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 12);
+  const serverChanged = Boolean(previousServerId && previousServerId !== meta.serverId);
+  const unpairedServer = !previousServerId && hasContent(remoteSummary);
+  const unrelated = hasContent(localSummary) && hasContent(remoteSummary) && common.chats === 0 && common.messages === 0 && common.notebooks === 0;
+  return { state: "ready", serverId: meta.serverId, previousServerId, createdAt: meta.createdAt, local: localSummary, remote: remoteSummary, common, conflicts, remoteLastWrite: newest ? { at: newest.updatedAt, deviceId: String(newest.deviceId ?? "legacy"), deviceName: String(newest.deviceName ?? "Unknown device") } : null, remoteChats, needsDecision: serverChanged || unpairedServer || unrelated || conflicts > 0 };
+}
+
+/** Checks the endpoint, credentials, metadata and one encrypted record without writing anything. */
+export async function verifyWebDavSync(config: SyncConfig): Promise<SyncVerification> {
+  if (!isSyncConfigured(config)) throw new Error("Save the sync setup and WebDAV credentials first.");
+  const entries = await listEntries(config);
+  if (!entries.includes(META_FILE)) return { state: "empty", serverId: null, records: 0 };
+  const meta = await readMeta(config);
+  if (!meta) return { state: "empty", serverId: null, records: 0 };
+  const key = await encryptionKey(config.passphrase, base64ToBytes(meta.salt));
+  const files = entries.filter((file) => file.endsWith(".bin"));
+  if (files[0]) {
+    const response = await request(config, files[0]);
+    if (!response.ok) throw new Error(`Could not read a sync record (${response.status}).`);
+    try { await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope); } catch { throw new Error("The encryption passphrase does not match this server."); }
+  }
+  return { state: "ready", serverId: meta.serverId || null, records: files.length };
+}
+
+export async function synchronizeWebDav({ config, data, settings, resolution = "merge" }: { config: SyncConfig; data: AppData; settings: AppSettings; resolution?: SyncResolution }) {
+  if (!isSyncConfigured(config)) throw new Error("Configure endpoint, WebDAV credentials, and passphrase first.");
+  const { meta, salt } = await getEncryptionMaterial(config);
   const key = await encryptionKey(config.passphrase, salt);
   const previousIndex = loadIndex(config);
   const remoteRecords = await readRecords(config, key, await listFiles(config));
@@ -352,7 +470,7 @@ export async function synchronizeWebDav({ config, data, settings }: { config: Sy
   const localFiles = new Set(local.records.map(recordFile));
   const tombs = Object.keys(previousIndex).filter((file) => !localFiles.has(file) && !file.startsWith("t-")).map((file) => ({ type: "tomb" as const, id: file, updatedAt: new Date().toISOString(), payload: { file } }));
   const stamped = await stampLocalRecords([...local.records, ...tombs], previousIndex, config, maximumRemoteClock);
-  const resolved = resolveRecords(stamped.records, remoteRecords);
+  const resolved = resolveRecords(stamped.records, remoteRecords, resolution);
   const remoteByFile = new Map(remoteRecords.map((record) => [recordFile(record), record]));
   const uploads = resolved.filter((record) => {
     const remote = remoteByFile.get(recordFile(record));
@@ -368,6 +486,7 @@ export async function synchronizeWebDav({ config, data, settings }: { config: Sy
   saveClock(config, clock);
   const now = new Date().toISOString();
   saveLastSyncAt(config, now);
+  saveRememberedServerId(config, meta.serverId);
   const activeRecords = resolved.filter((record) => record.type !== "tomb");
-  return { data: assembledData(activeRecords), settings: settingsForLocal(activeRecords.find((record) => record.type === "settings"), settings, config.includeKeys), uploaded: uploads.length, downloaded: remoteRecords.length, compressedImages: local.compressedImages, syncedAt: now };
+  return { data: assembledData(activeRecords), settings: settingsForLocal(activeRecords.find((record) => record.type === "settings"), settings, config.includeKeys), uploaded: uploads.length, downloaded: remoteRecords.length, compressedImages: local.compressedImages, syncedAt: now, serverId: meta.serverId };
 }
