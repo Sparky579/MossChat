@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.1.1
+## 0.2.1
+
+Installable PWA with an app manifest, offline shell cache, and install guidance for desktop and mobile browsers.
+
+## 0.2.0
 
 WebDAV sync with browser-side encryption, endpoint setup guidance, and a right-side sync control.
 
