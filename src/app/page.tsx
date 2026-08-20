@@ -59,6 +59,24 @@ const COPY = {
 const LocaleContext = createContext<Locale>("en");
 const useCopy = () => COPY[useContext(LocaleContext)];
 
+function useCopyFeedback() {
+  const locale = useContext(LocaleContext);
+  const [copied, setCopied] = useState<string | null>(null);
+  const timeout = useRef<number | null>(null);
+  useEffect(() => () => { if (timeout.current) window.clearTimeout(timeout.current); }, []);
+  const copyText = useCallback(async (value: string, id = "default") => {
+    if (!value) return false;
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(id);
+      if (timeout.current) window.clearTimeout(timeout.current);
+      timeout.current = window.setTimeout(() => setCopied(null), 1_800);
+      return true;
+    } catch { return false; }
+  }, []);
+  return { copied, copyText, copiedLabel: locale === "zh" ? "已复制" : "Copied" };
+}
+
 function MossMark({ className, size = 24 }: { className?: string; size?: number }) {
   return <svg className={`moss-mark ${className ?? ""}`} width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true"><rect x="2" y="2" width="28" height="28" rx="9" fill="#E7F5EC" /><path d="M16.3 25.5c-4.9-1.6-7.2-5.2-6.5-10.7 4.9.5 8.2 3.2 8.3 8.4-.5.9-1.1 1.7-1.8 2.3Z" fill="#198754" /><path d="M17.2 16.9c.5-5 3.6-8.1 8.6-8.5.2 5.5-2.4 9-7.8 9.4l-.8-.9Z" fill="#46B96C" /><path d="M12.1 10.1c2.9.1 5.1 1.5 6 4.2-3 .6-5.2-.6-6-4.2Z" fill="#75CA8D" /><path d="M16.3 25.5c.2-4.1.6-6.6 3.8-10.8M16.4 21.8c-1.1-2.2-2.6-4-4.8-5.5" stroke="#0F5F37" strokeWidth="1.45" strokeLinecap="round" /></svg>;
 }
@@ -108,12 +126,12 @@ const formatBytes = (value?: number) => value === undefined ? "—" : value < 10
 function syncAge(time: string | null, now: number, locale: Locale) {
   if (!time) return locale === "zh" ? "尚未同步" : "Not synced yet";
   const seconds = Math.max(0, Math.floor((now - Date.parse(time)) / 1000));
-  if (seconds < 10) return locale === "zh" ? "刚刚同步" : "Synced just now";
-  if (seconds < 60) return locale === "zh" ? `${seconds} 秒前同步` : `Synced ${seconds}s ago`;
+  if (seconds < 10) return locale === "zh" ? "已同步 · 刚刚" : "Synced · just now";
+  if (seconds < 60) return locale === "zh" ? `已同步 · ${seconds} 秒前` : `Synced · ${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return locale === "zh" ? `${minutes} 分钟前同步` : `Synced ${minutes} min ago`;
+  if (minutes < 60) return locale === "zh" ? `已同步 · ${minutes} 分钟前` : `Synced · ${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
-  return locale === "zh" ? `${hours} 小时前同步` : `Synced ${hours}h ago`;
+  return locale === "zh" ? `已同步 · ${hours} 小时前` : `Synced · ${hours}h ago`;
 }
 
 const toDataUrl = (file: File) =>
@@ -283,9 +301,10 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResul
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(() => messageText(message));
   const functionCall = user ? null : functionCallFromText(messageText(message));
+  const { copied, copyText, copiedLabel } = useCopyFeedback();
   const copyMessage = async () => {
     const text = messageText(message);
-    if (text) await navigator.clipboard?.writeText(text);
+    if (text) await copyText(text);
   };
   return <article className={`message-row ${user ? "message-user" : "message-assistant"} ${hasThinking ? "has-thinking" : ""}`}>
     <div className="message-content">
@@ -294,7 +313,7 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResul
     </div>
     {!user && !message.status?.running && <div className="answer-feedback"><span>{locale === "zh" ? "这条回答怎么样？" : "How was this response?"}</span><button className="icon-button" type="button" aria-label={locale === "zh" ? "有帮助" : "Helpful"} title={locale === "zh" ? "有帮助" : "Helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "helpful" })}><ThumbsUp size={15} /></button><button className="icon-button" type="button" aria-label={locale === "zh" ? "没有帮助" : "Not helpful"} title={locale === "zh" ? "没有帮助" : "Not helpful"} onClick={() => onFeedback({ messageId: message.id, response: messageText(message), reaction: "not-helpful" })}><ThumbsDown size={15} /></button></div>}
     <div className="message-actions">
-      <button className="icon-button" type="button" aria-label="Copy" title="Copy" onClick={() => void copyMessage()}><Copy size={16} /></button>
+      <button className={`icon-button copy-button ${copied ? "is-copied" : ""}`} type="button" aria-label={copied ? copiedLabel : (locale === "zh" ? "复制" : "Copy")} title={copied ? copiedLabel : (locale === "zh" ? "复制" : "Copy")} onClick={() => void copyMessage()}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
       {user && <button className="icon-button" type="button" aria-label="Edit" title="Edit" onClick={() => { setDraft(messageText(message)); setEditing(true); }}><Pencil size={16} /></button>}
       {!user && <button className="icon-button" type="button" aria-label="Regenerate" title="Regenerate" onClick={() => onReload(index)}><RefreshCw size={16} /></button>}
       {functionCall && <button className="icon-button" type="button" aria-label="Return function result" title={locale === "zh" ? "填写函数结果" : "Return function result"} onClick={() => onFunctionResult(index, functionCall)}><MoreHorizontal size={16} /></button>}
@@ -625,7 +644,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     onChange({ ...settings, providers, providerOrder, activeProvider: settings.activeProvider === id ? providerOrder[0] : settings.activeProvider, namingProvider: settings.namingProvider === id ? providerOrder[0] : settings.namingProvider });
   };
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-modal="true" aria-label={copy.settings} onMouseDown={(event) => event.stopPropagation()}>
-    <header><div><MossMark className="app-mark settings-mark" /><h2>{copy.settings}</h2></div><button className="icon-button" onClick={onClose} aria-label={copy.done}><X /></button></header>
+    <header><div><MossMark className="app-mark settings-mark" /><h2>{copy.settings}</h2></div><div className="settings-header-actions"><label>{settings.language === "zh" ? "语言" : "Language"}<select value={settings.language} aria-label={settings.language === "zh" ? "语言" : "Language"} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="en">English</option><option value="zh">中文</option></select></label><button className="icon-button" onClick={onClose} aria-label={copy.done}><X /></button></div></header>
     <div className="settings-body"><nav>{[["models", copy.apiModels], ["behavior", copy.behavior], ["tools", copy.tools], ["privacy", copy.privacy]].map(([id, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</nav>
       <div className="settings-content">
         {tab === "models" && <>
@@ -725,6 +744,7 @@ function SyncConfigImport({ onApply }: { onApply: (config: Pick<SyncConfig, "end
 function SyncDialog({ config, onSave, onClose }: { config: SyncConfig; onSave: (config: SyncConfig) => void; onClose: () => void }) {
   const locale = useContext(LocaleContext);
   const [draft, setDraft] = useState(config);
+  const { copied, copyText, copiedLabel } = useCopyFeedback();
   const isChinese = locale === "zh";
   const origin = typeof window === "undefined" ? "https://yourapp.com" : window.location.origin;
   const caddyfile = `{
@@ -837,9 +857,9 @@ Only after every verification check passes, print exactly these blocks in this o
 ===VERIFY_END===
 
 If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix it, explain what remains broken and do not print a configuration block.`;
-  const copy = (value: string) => void navigator.clipboard?.writeText(value);
+  const copy = (value: string, id = "sync") => void copyText(value, id);
   const save = () => { onSave({ ...draft, endpoint: draft.endpoint.trim() }); };
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "配置同步" : "Configure sync"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div className="sync-dialog-body"><section className="sync-fields"><SyncConfigImport onApply={(imported) => setDraft((current) => ({ ...current, ...imported }))} /><label>{isChinese ? "WebDAV endpoint" : "WebDAV endpoint"}<input type="url" autoComplete="url" placeholder="https://sync.example.com/sync/" value={draft.endpoint} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value })} /></label><div className="two-fields"><label>{isChinese ? "用户名" : "Username"}<input autoComplete="username" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /></label><label>{isChinese ? "WebDAV 密码" : "WebDAV password"}<input type="password" autoComplete="current-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /></label></div><label>{isChinese ? "加密口令" : "Encryption passphrase"}<input type="password" autoComplete="new-password" value={draft.passphrase} onChange={(event) => setDraft({ ...draft, passphrase: event.target.value })} /></label><p>{isChinese ? "口令在上传前派生加密密钥。它和 WebDAV 凭据只保留在此浏览器，以便下次打开时自动同步。" : "The passphrase derives the encryption key before upload. It and the WebDAV credentials stay in this browser so sync can run on the next visit."}</p><label className="sync-toggle"><input type="checkbox" checked={draft.includeKeys} onChange={(event) => setDraft({ ...draft, includeKeys: event.target.checked })} />{isChinese ? "同步 API keys" : "Sync API keys"}</label>{draft.includeKeys && <p className="sync-warning">{isChinese ? "API keys 会先加密再上传。请使用足够长且独特的口令。" : "API keys are encrypted before upload. Use a long, unique passphrase."}</p>}<div className="sync-config-actions"><button type="button" className="text-button" onClick={save}>{isChinese ? "保存配置" : "Save configuration"}</button></div></section><section className="sync-guide"><h3>{isChinese ? "同步教程" : "Sync server guide"}</h3><p>{isChinese ? "需要 HTTPS，且 OPTIONS 必须在 Basic Auth 之前返回 204。" : "Use HTTPS. OPTIONS must return 204 before Basic Auth runs."}</p><details open><summary>{isChinese ? "给人的 Caddy 配置" : "Caddy setup"}</summary><pre>{caddyfile}</pre><button type="button" onClick={() => copy(caddyfile)}>{isChinese ? "复制 Caddyfile" : "Copy Caddyfile"}</button></details><details><summary>{isChinese ? "给 Agent 的一键配置任务" : "One click task for an agent"}</summary><p>{isChinese ? "内容包括检测环境、Docker 回退、Tailscale、验证和可直接导入的配置结果。" : "Includes environment checks, Docker fallback, Tailscale, verification, and an importable result."}</p><button type="button" onClick={() => copy(agentTask)}>{isChinese ? "复制 Agent 任务" : "Copy agent task"}</button></details></section></div></section></div>;
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "配置同步" : "Configure sync"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div className="sync-dialog-body"><section className="sync-fields"><SyncConfigImport onApply={(imported) => setDraft((current) => ({ ...current, ...imported }))} /><label>{isChinese ? "WebDAV endpoint" : "WebDAV endpoint"}<input type="url" autoComplete="url" placeholder="https://sync.example.com/sync/" value={draft.endpoint} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value })} /></label><div className="two-fields"><label>{isChinese ? "用户名" : "Username"}<input autoComplete="username" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /></label><label>{isChinese ? "WebDAV 密码" : "WebDAV password"}<input type="password" autoComplete="current-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /></label></div><label>{isChinese ? "加密口令" : "Encryption passphrase"}<input type="password" autoComplete="new-password" value={draft.passphrase} onChange={(event) => setDraft({ ...draft, passphrase: event.target.value })} /></label><p>{isChinese ? "口令在上传前派生加密密钥。它和 WebDAV 凭据只保留在此浏览器，以便下次打开时自动同步。" : "The passphrase derives the encryption key before upload. It and the WebDAV credentials stay in this browser so sync can run on the next visit."}</p><label className="sync-toggle"><input type="checkbox" checked={draft.includeKeys} onChange={(event) => setDraft({ ...draft, includeKeys: event.target.checked })} />{isChinese ? "同步 API keys" : "Sync API keys"}</label>{draft.includeKeys && <p className="sync-warning">{isChinese ? "API keys 会先加密再上传。请使用足够长且独特的口令。" : "API keys are encrypted before upload. Use a long, unique passphrase."}</p>}<div className="sync-config-actions"><button type="button" className="text-button" onClick={save}>{isChinese ? "保存配置" : "Save configuration"}</button></div></section><section className="sync-guide"><h3>{isChinese ? "同步教程" : "Sync server guide"}</h3><p>{isChinese ? "需要 HTTPS，且 OPTIONS 必须在 Basic Auth 之前返回 204。" : "Use HTTPS. OPTIONS must return 204 before Basic Auth runs."}</p><details open><summary>{isChinese ? "给人的 Caddy 配置" : "Caddy setup"}</summary><pre>{caddyfile}</pre><button className={copied === "caddy" ? "is-copied" : ""} type="button" onClick={() => copy(caddyfile, "caddy")}>{copied === "caddy" ? copiedLabel : (isChinese ? "复制 Caddyfile" : "Copy Caddyfile")}</button></details><details><summary>{isChinese ? "给 Agent 的一键配置任务" : "One click task for an agent"}</summary><p>{isChinese ? "内容包括检测环境、Docker 回退、Tailscale、验证和可直接导入的配置结果。" : "Includes environment checks, Docker fallback, Tailscale, verification, and an importable result."}</p><button className={copied === "agent" ? "is-copied" : ""} type="button" onClick={() => copy(agentTask, "agent")}>{copied === "agent" ? copiedLabel : (isChinese ? "复制 Agent 任务" : "Copy agent task")}</button></details></section></div></section></div>;
 }
 
 function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRename, onDelete }: { notebook: Notebook; chats: Chat[]; onBack: () => void; onCreateChat: () => void; onOpenChat: (chatId: string) => void; onRename: (title: string) => void; onDelete: () => void }) {
@@ -867,6 +887,9 @@ export default function Home() {
   const [notebookCreateOpen, setNotebookCreateOpen] = useState(false);
   const [notebookTitleDraft, setNotebookTitleDraft] = useState("");
   const [notebookCreateChatId, setNotebookCreateChatId] = useState<string | null>(null);
+  const [expandedNotebookId, setExpandedNotebookId] = useState<string | null>(null);
+  const [renamingNotebookId, setRenamingNotebookId] = useState<string | null>(null);
+  const [notebookRenameDraft, setNotebookRenameDraft] = useState("");
   const [expandedChatId, setExpandedChatId] = useState<string | null>(null);
   const [addingNotebookForChatId, setAddingNotebookForChatId] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
@@ -1008,7 +1031,7 @@ export default function Home() {
   }, [hasStreamingMessage, hydrated, lastSyncAt, runSync, syncReady, syncSignature]);
   useEffect(() => {
     if (!hydrated || !syncReady) return;
-    const timer = window.setInterval(() => { if (!hasStreamingMessage) void runSync(); }, 120_000);
+    const timer = window.setInterval(() => { if (!hasStreamingMessage) void runSync(); }, 600_000);
     const online = () => { if (!hasStreamingMessage) void runSync(); };
     window.addEventListener("online", online);
     return () => { window.clearInterval(timer); window.removeEventListener("online", online); };
@@ -1154,6 +1177,8 @@ export default function Home() {
     setActiveNotebookId(notebookId);
     setActiveChatId(null);
     setNotebookViewOpen(true);
+    setExpandedNotebookId(null);
+    setRenamingNotebookId(null);
     setExpandedChatId(null);
     setAddingNotebookForChatId(null);
   };
@@ -1167,6 +1192,19 @@ export default function Home() {
     void saveNotebook(nextNotebook);
   };
 
+  const beginRenameNotebook = (notebookId: string) => {
+    const target = data.notebooks.find((notebook) => notebook.id === notebookId);
+    if (!target) return;
+    setNotebookRenameDraft(target.title);
+    setRenamingNotebookId(notebookId);
+    setExpandedNotebookId(null);
+  };
+
+  const saveSidebarNotebookRename = (notebookId: string) => {
+    renameNotebook(notebookId, notebookRenameDraft);
+    setRenamingNotebookId(null);
+  };
+
   const removeNotebook = (notebookId: string) => {
     const target = data.notebooks.find((notebook) => notebook.id === notebookId);
     if (!target) return;
@@ -1176,6 +1214,8 @@ export default function Home() {
     setData((current) => ({ ...current, notebooks: current.notebooks.filter((notebook) => notebook.id !== notebookId), chats: current.chats.map((chat) => updatedChats.find((updated) => updated.id === chat.id) ?? chat) }));
     for (const chat of updatedChats) void saveChatMetadata(chat);
     void deleteNotebook(notebookId);
+    setExpandedNotebookId(null);
+    setRenamingNotebookId(null);
     if (activeNotebookId === notebookId) {
       setActiveNotebookId(null);
       setNotebookViewOpen(false);
@@ -1274,7 +1314,17 @@ export default function Home() {
       <div className="brand-row"><button type="button" className="brand" onClick={() => setSidebarOpen(false)}><MossMark className="app-mark brand-mark" /><span>MossChat</span></button><button className="icon-button collapse-button" onClick={() => setSidebarOpen(false)} aria-label="Collapse sidebar"><PanelLeftClose size={19} /></button></div>
       <button className="new-chat" type="button" onClick={() => createChat()}><Pencil size={17} />{copy.newChat}<span>Ctrl + Shift + O</span></button>
       <div className="side-nav"><button onClick={() => setSearchOpen(true)}><Search size={17} />{copy.searchChats}</button></div>
-      <div className="side-section notebook-section"><div className="section-label"><span>{copy.notebooks}</span><button className="icon-button" type="button" aria-label={copy.newNotebook} title={copy.newNotebook} onClick={() => beginCreateNotebook()}><Plus size={16} /></button></div>{notebookCreateOpen && <form className="new-notebook-form" onSubmit={(event) => { event.preventDefault(); saveNewNotebook(); }}><input autoFocus value={notebookTitleDraft} maxLength={120} aria-label={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} placeholder={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} onChange={(event) => setNotebookTitleDraft(event.target.value)} /><button type="submit" className="icon-button" aria-label={settings.language === "zh" ? "创建" : "Create"}><Check size={16} /></button><button type="button" className="icon-button" aria-label={settings.language === "zh" ? "取消" : "Cancel"} onClick={() => { setNotebookCreateOpen(false); setNotebookCreateChatId(null); }}><X size={16} /></button>{notebookCreateChatId && <small>{settings.language === "zh" ? "创建后会将当前对话加入其中" : "The current chat will be added"}</small>}</form>}{data.notebooks.map((notebook) => { const count = data.chats.filter((chat) => chat.notebookId === notebook.id).length; return <button key={notebook.id} className={`side-item notebook-item ${notebookViewOpen && activeNotebookId === notebook.id ? "active" : ""}`} type="button" onClick={() => openNotebook(notebook.id)}><BookOpen size={16} /><span>{notebook.title}</span><small>{count}</small></button>; })}</div>
+      <div className="side-section notebook-section">
+        <div className="section-label"><span>{copy.notebooks}</span><button className="icon-button" type="button" aria-label={copy.newNotebook} title={copy.newNotebook} onClick={() => beginCreateNotebook()}><Plus size={16} /></button></div>
+        {notebookCreateOpen && <form className="new-notebook-form" onSubmit={(event) => { event.preventDefault(); saveNewNotebook(); }}><input autoFocus value={notebookTitleDraft} maxLength={120} aria-label={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} placeholder={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} onChange={(event) => setNotebookTitleDraft(event.target.value)} /><button type="submit" className="icon-button" aria-label={settings.language === "zh" ? "创建" : "Create"}><Check size={16} /></button><button type="button" className="icon-button" aria-label={settings.language === "zh" ? "取消" : "Cancel"} onClick={() => { setNotebookCreateOpen(false); setNotebookCreateChatId(null); }}><X size={16} /></button>{notebookCreateChatId && <small>{settings.language === "zh" ? "创建后会将当前对话加入其中" : "The current chat will be added"}</small>}</form>}
+        {data.notebooks.map((notebook) => {
+          const count = data.chats.filter((chat) => chat.notebookId === notebook.id).length;
+          return <div key={notebook.id} className={`side-item notebook-item ${notebookViewOpen && activeNotebookId === notebook.id ? "active" : ""}`}>
+            <div className="notebook-row">{renamingNotebookId === notebook.id ? <input className="chat-title-editor" autoFocus value={notebookRenameDraft} aria-label={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} onChange={(event) => setNotebookRenameDraft(event.target.value)} onBlur={() => saveSidebarNotebookRename(notebook.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveSidebarNotebookRename(notebook.id); } if (event.key === "Escape") setRenamingNotebookId(null); }} /> : <button className="notebook-select" type="button" title={notebook.title} onClick={() => openNotebook(notebook.id)}><BookOpen size={16} /><span>{notebook.title}</span><small>{count}</small></button>}<button className="notebook-more" type="button" aria-label={settings.language === "zh" ? "Notebook 操作" : "Notebook actions"} title={settings.language === "zh" ? "Notebook 操作" : "Notebook actions"} onClick={() => setExpandedNotebookId((id) => id === notebook.id ? null : notebook.id)}><MoreHorizontal size={16} /></button></div>
+            {expandedNotebookId === notebook.id && <div className="chat-actions-panel"><button type="button" onClick={() => beginRenameNotebook(notebook.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" className="danger" onClick={() => removeNotebook(notebook.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}
+          </div>;
+        })}
+      </div>
       <div className="side-section recent-section"><div className="section-label"><span>{copy.recent}</span></div>{visibleChats.slice(0, 11).map((chat) => <div className={`side-item chat-item ${activeChatId === chat.id && !notebookViewOpen ? "active" : ""}`} key={chat.id}><div className="chat-row">{renamingChatId === chat.id ? <input className="chat-title-editor" autoFocus value={chatTitleDraft} aria-label={settings.language === "zh" ? "会话标题" : "Chat title"} onChange={(event) => setChatTitleDraft(event.target.value)} onBlur={() => saveRenamedChat(chat.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveRenamedChat(chat.id); } if (event.key === "Escape") setRenamingChatId(null); }} /> : <button className="chat-select" type="button" title={chat.title} onClick={() => selectChat(chat.id)}><span className="chat-title">{chat.title}</span>{chat.pinned && <Pin size={13} fill="currentColor" />}</button>}<button className="chat-more" type="button" aria-label={settings.language === "zh" ? "会话操作" : "Chat actions"} title={settings.language === "zh" ? "会话操作" : "Chat actions"} onClick={() => { setExpandedChatId((id) => id === chat.id ? null : chat.id); setAddingNotebookForChatId(null); }}><MoreHorizontal size={16} /></button></div>{expandedChatId === chat.id && <div className="chat-actions-panel"><button type="button" onClick={() => toggleChatPin(chat.id)}><Pin size={14} fill={chat.pinned ? "currentColor" : "none"} />{chat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin") : (settings.language === "zh" ? "置顶" : "Pin")}</button><button type="button" onClick={() => beginRenameChat(chat.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" onClick={() => setAddingNotebookForChatId((id) => id === chat.id ? null : chat.id)}><BookOpen size={14} />{settings.language === "zh" ? "添加到 Notebook" : "Add to notebook"}</button>{addingNotebookForChatId === chat.id && <div className="action-notebook-list">{data.notebooks.map((notebook) => <button type="button" key={notebook.id} onClick={() => addChatToNotebook(chat.id, notebook.id)}>{notebook.title}</button>)}<button type="button" onClick={() => createNotebookForChat(chat.id)}><Plus size={14} />{settings.language === "zh" ? "新建 Notebook" : "New notebook"}</button></div>}<button type="button" className="danger" onClick={() => removeChat(chat.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}</div>)}</div>
       <div className="profile-row"><div className="profile-avatar">A</div><div><strong>{copy.localWorkspace}</strong><small>{copy.browserOnly}</small></div><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label={copy.settings}><Settings size={18} /></button></div>
     </aside>
@@ -1286,7 +1336,7 @@ export default function Home() {
         {!installed && <button className="top-icon pwa-install-button" type="button" title={settings.language === "zh" ? "添加 MossChat 到桌面" : "Add MossChat to desktop"} onClick={() => void installApp()}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
         <div className="top-actions">
           {activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
-          <div className="sync-wrap"><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncStatus === "error" ? "error" : ""}`}><i />{syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
+          <div className="sync-wrap"><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncReady && <span className="sync-age" aria-live="polite">{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncStatusText}</span>}{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncReady ? "is-ready" : "is-inactive"} ${syncStatus === "error" ? "error" : ""}`}><i />{syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
           <div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div>
           <button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
         </div>

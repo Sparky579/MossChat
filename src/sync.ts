@@ -20,7 +20,8 @@ export type SyncConfig = {
 type AgentSyncConfig = { url?: unknown; username?: unknown; password?: unknown; protocol?: unknown; path?: unknown };
 type EncryptedEnvelope = { v: 1; iv: string; data: string };
 type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown; clock?: number; deviceId?: string };
-type SyncIndexEntry = { hash: string; clock: number; deviceId: string; updatedAt: string };
+/** Only sync metadata is kept locally: no chat body, attachment bytes, or encrypted record cache. */
+type SyncIndexEntry = { hash: string; clock: number; deviceId: string };
 type SyncIndex = Record<string, SyncIndexEntry>;
 
 export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", deviceId: crypto.randomUUID(), includeKeys: false });
@@ -63,7 +64,7 @@ function lastSyncKey(config: SyncConfig) { return `${LAST_SYNC_PREFIX}:${configS
 function loadIndex(config: SyncConfig): SyncIndex {
   try {
     const source = JSON.parse(localStorage.getItem(indexKey(config)) ?? "{}") as Record<string, Partial<SyncIndexEntry>>;
-    return Object.fromEntries(Object.entries(source).flatMap(([file, entry]) => typeof entry.hash !== "string" ? [] : [[file, { hash: entry.hash, clock: Number.isSafeInteger(entry.clock) && (entry.clock ?? 0) >= 0 ? Number(entry.clock) : 0, deviceId: typeof entry.deviceId === "string" ? entry.deviceId : "legacy", updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : new Date(0).toISOString() }]]));
+    return Object.fromEntries(Object.entries(source).flatMap(([file, entry]) => typeof entry.hash !== "string" ? [] : [[file, { hash: entry.hash, clock: Number.isSafeInteger(entry.clock) && (entry.clock ?? 0) >= 0 ? Number(entry.clock) : 0, deviceId: typeof entry.deviceId === "string" ? entry.deviceId : "legacy" }]]));
   } catch { return {}; }
 }
 
@@ -81,7 +82,7 @@ const arrayBuffer = (bytes: Uint8Array): ArrayBuffer => bytes.buffer.slice(bytes
 
 async function contentHash(value: unknown) {
   const digest = await crypto.subtle.digest("SHA-256", arrayBuffer(encoder.encode(JSON.stringify(value))));
-  return bytesToBase64(new Uint8Array(digest));
+  return bytesToBase64(new Uint8Array(digest)).slice(0, 22);
 }
 
 function normalizedEndpoint(endpoint: string) {
@@ -221,7 +222,7 @@ function compareRecords(left: SyncRecord, right: SyncRecord) {
   const clocks = recordClock(left) - recordClock(right);
   if (clocks) return clocks;
   const devices = String(left.deviceId ?? "legacy").localeCompare(String(right.deviceId ?? "legacy"));
-  return devices || left.updatedAt.localeCompare(right.updatedAt);
+  return devices;
 }
 
 async function stampLocalRecords(records: SyncRecord[], index: SyncIndex, config: SyncConfig, minimumClock: number) {
@@ -232,7 +233,7 @@ async function stampLocalRecords(records: SyncRecord[], index: SyncIndex, config
     const hash = await contentHash(record.payload);
     const existing = index[file];
     if (existing?.hash === hash) {
-      stamped.push({ ...record, clock: existing.clock, deviceId: existing.deviceId, updatedAt: existing.updatedAt });
+      stamped.push({ ...record, clock: existing.clock, deviceId: existing.deviceId });
       clock = Math.max(clock, existing.clock);
       continue;
     }
@@ -243,7 +244,7 @@ async function stampLocalRecords(records: SyncRecord[], index: SyncIndex, config
 }
 
 async function indexRecords(records: SyncRecord[]): Promise<SyncIndex> {
-  const entries = await Promise.all(records.map(async (record) => [recordFile(record), { hash: await contentHash(record.payload), clock: recordClock(record), deviceId: String(record.deviceId ?? "legacy"), updatedAt: record.updatedAt }] as const));
+  const entries = await Promise.all(records.map(async (record) => [recordFile(record), { hash: await contentHash(record.payload), clock: recordClock(record), deviceId: String(record.deviceId ?? "legacy") }] as const));
   return Object.fromEntries(entries);
 }
 

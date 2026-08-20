@@ -13,7 +13,7 @@ Browser based chat client for your own model API keys. Keys, chats, files, and s
 </p>
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-198754.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.2-198754.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.3-198754.svg)](CHANGELOG.md)
 [![Next.js](https://img.shields.io/badge/Next.js-15-111111.svg)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6.svg)](https://www.typescriptlang.org/)
 
