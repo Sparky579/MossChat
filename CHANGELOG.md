@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4
+
+The sync-server Agent task can now be read in the app before copying. It detects and prefers an existing Cloudflare Tunnel, uses Docker or Caddy when needed, and treats Tailscale as the final fallback. The Tailscale path explicitly tells the user that every syncing machine must join the same tailnet and satisfy its ACLs.
+
 ## 0.2.3
 
 Notebook rows now have a three-dot menu for inline rename and delete. Copy controls confirm success, Settings keeps a stable height with a language selector in its header, and sync status is gray until configured. Configured clients show their last successful sync beside the Sync control and check remote changes every ten minutes. The incremental index contains compact metadata only, never duplicate chat or attachment data.
