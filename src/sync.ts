@@ -14,6 +14,14 @@ export type SyncConfig = {
   includeKeys: boolean;
 };
 
+type AgentSyncConfig = {
+  url?: unknown;
+  username?: unknown;
+  password?: unknown;
+  protocol?: unknown;
+  path?: unknown;
+};
+
 type EncryptedEnvelope = { v: 1; iv: string; data: string };
 type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown };
 type SyncIndex = Record<string, { hash: string; updatedAt: string }>;
@@ -33,6 +41,30 @@ export function saveSyncConfig(config: SyncConfig) {
 
 export function isSyncConfigured(config: SyncConfig) {
   return Boolean(config.endpoint && config.username && config.password && config.passphrase);
+}
+
+/** Accepts the machine-readable block emitted by the sync-server setup task. */
+export function parseAgentSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "username" | "password"> {
+  const match = value.match(/===SYNC_CONFIG_START===\s*([\s\S]*?)\s*===SYNC_CONFIG_END===/);
+  if (!match) throw new Error("Paste the complete SYNC_CONFIG block from the setup result.");
+
+  let parsed: AgentSyncConfig;
+  try { parsed = JSON.parse(match[1]) as AgentSyncConfig; } catch { throw new Error("The SYNC_CONFIG block does not contain valid JSON."); }
+  if (parsed.protocol !== "webdav") throw new Error("This SYNC_CONFIG block is not for WebDAV.");
+  if (typeof parsed.url !== "string" || typeof parsed.username !== "string" || typeof parsed.password !== "string" || typeof parsed.path !== "string") {
+    throw new Error("The SYNC_CONFIG block is missing a URL, username, password, or path.");
+  }
+
+  let source: URL;
+  try { source = new URL(parsed.url); } catch { throw new Error("The SYNC_CONFIG URL is invalid."); }
+  if (source.protocol !== "https:" && source.hostname !== "localhost" && source.hostname !== "127.0.0.1") throw new Error("The SYNC_CONFIG URL must use HTTPS.");
+  const path = parsed.path.trim();
+  if (!path.startsWith("/")) throw new Error("The SYNC_CONFIG path must start with a slash.");
+  const endpoint = new URL(path, source.origin);
+  endpoint.search = "";
+  endpoint.hash = "";
+  if (!endpoint.pathname.endsWith("/")) endpoint.pathname += "/";
+  return { endpoint: endpoint.href, username: parsed.username, password: parsed.password };
 }
 
 function indexKey(config: SyncConfig) {
