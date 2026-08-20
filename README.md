@@ -13,7 +13,7 @@ Browser based chat client for your own model API keys. Keys, chats, files, and s
 </p>
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-198754.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-198754.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.1-198754.svg)](CHANGELOG.md)
 [![Next.js](https://img.shields.io/badge/Next.js-15-111111.svg)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6.svg)](https://www.typescriptlang.org/)
 
@@ -38,6 +38,7 @@ There is no MossChat account service, API proxy, or server side key store.
 | Files | Drag files in, select them, or paste images from the clipboard. Images and PDFs can go directly to supported providers |
 | Notebooks | Group conversations, rename notebooks, and set a notebook system prompt inherited by its chats |
 | Local data | Per message IndexedDB storage, persistent storage request, ZIP backup, automatic folder backup, and legacy JSON import |
+| Optional sync | Encrypted WebDAV sync with per-record files, device-side merge, and setup guidance for Caddy |
 | Interface | English by default, Simplified Chinese option, voice input, responsive layout, and browser local settings |
 
 ## Getting started

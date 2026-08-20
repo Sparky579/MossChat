@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+WebDAV sync with browser-side encryption, endpoint setup guidance, and a right-side sync control.
+
 ## 0.1.0
 
 Initial public release of MossChat.

@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
+  Cloud,
   Copy,
   FileText,
   GitBranch,
@@ -38,6 +39,7 @@ import {
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
+import { emptySyncConfig, isSyncConfigured, loadSyncConfig, saveSyncConfig, synchronizeWebDav, type SyncConfig } from "@/sync";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
@@ -679,6 +681,91 @@ function FeedbackDialog({ target, onClose }: { target: FeedbackTarget | null; on
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="feedback-title" onMouseDown={(event) => event.stopPropagation()}><header><div><MessageSquareText size={20} /><h2 id="feedback-title">{isChinese ? "反馈" : "Feedback"}</h2></div><button className="icon-button" type="button" aria-label={isChinese ? "关闭" : "Close"} onClick={onClose}><X /></button></header>{sent ? <div className="feedback-sent"><h3>{isChinese ? "已发送，谢谢。" : "Thanks, your feedback was sent."}</h3><p>{isChinese ? "我们会查看每一条反馈。" : "We review every submission."}</p><button type="button" className="text-button" onClick={onClose}>{isChinese ? "完成" : "Done"}</button></div> : <form onSubmit={submit}><div className="feedback-body"><label>{isChinese ? "有什么坏了或者缺什么？" : "What is broken or missing?"}<textarea autoFocus value={message} maxLength={4000} onChange={(event) => setMessage(event.target.value)} /></label>{target?.response && <p className="feedback-context">{isChinese ? "这条回答会随反馈一同发送。" : "This response will be included with your feedback."}</p>}<label>{isChinese ? "邮箱（可选，想收到回复就填）" : "Email (optional, only if you want a reply)"}<input type="email" inputMode="email" autoComplete="email" value={email} maxLength={254} onChange={(event) => setEmail(event.target.value)} /></label><label className="feedback-subscribe"><input type="checkbox" checked={subscribe} onChange={(event) => setSubscribe(event.target.checked)} />{isChinese ? "也通知我新版本（大约每月一封）" : "Also notify me about new versions (about one email a month)"}</label><p className="feedback-privacy">{isChinese ? "反馈会发送到 MossChat 的反馈邮箱。若勾选订阅，邮箱会加入新版本通知名单。" : "Feedback is sent to the MossChat feedback mailbox. If you opt in, your email is added to the release update list."}</p>{error && <p className="feedback-error" role="alert">{error}</p>}</div><footer><button type="button" className="feedback-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button><button type="submit" className="text-button" disabled={sending}>{sending ? (isChinese ? "发送中…" : "Sending…") : (isChinese ? "发送反馈" : "Send feedback")}</button></footer></form>}</section></div>;
 }
 
+function SyncDialog({ config, onSave, onClose }: { config: SyncConfig; onSave: (config: SyncConfig) => void; onClose: () => void }) {
+  const locale = useContext(LocaleContext);
+  const [draft, setDraft] = useState(config);
+  const isChinese = locale === "zh";
+  const origin = typeof window === "undefined" ? "https://yourapp.com" : window.location.origin;
+  const caddyfile = `{
+  order respond before basicauth
+}
+
+sync.example.com {
+  @preflight method OPTIONS
+  handle @preflight {
+    header Access-Control-Allow-Origin "${origin}"
+    header Access-Control-Allow-Methods "GET, PUT, DELETE, PROPFIND, OPTIONS"
+    header Access-Control-Allow-Headers "Authorization, Content-Type, Depth"
+    header Access-Control-Max-Age "86400"
+    respond "" 204
+  }
+
+  header Access-Control-Allow-Origin "${origin}"
+  header Access-Control-Allow-Methods "GET, PUT, DELETE, PROPFIND, OPTIONS"
+  header Access-Control-Allow-Headers "Authorization, Content-Type, Depth"
+  root * /data/chatsync
+  basicauth {
+    ${draft.username || "you"} <bcrypt-hash>
+  }
+  webdav
+}`;
+  const agentTask = `# Task: set up sync server for MossChat
+
+You are configuring a WebDAV sync endpoint on this machine.
+
+## Required outcome
+An HTTPS endpoint that serves WebDAV at the root, allows CORS from ${origin}, allows GET, PUT, DELETE, PROPFIND, OPTIONS, answers OPTIONS with 204 before auth, and requires Basic Auth for all other methods.
+
+## Steps
+1. Detect Docker, Caddy, and Tailscale.
+2. Prefer Docker Compose. Fall back to native Caddy.
+3. Create a Caddy build with github.com/mholt/caddy-webdav and use this Caddyfile.
+4. If no public domain is available, run tailscale serve --bg https / http://localhost:8080 and report the hostname.
+5. Generate the bcrypt hash with caddy hash-password, generate a strong password, and verify the endpoint with the curl command below.
+
+## Caddyfile
+\`\`\`caddy
+${caddyfile}
+\`\`\`
+
+## Dockerfile
+\`\`\`dockerfile
+FROM caddy:2-builder AS builder
+RUN xcaddy build --with github.com/mholt/caddy-webdav
+FROM caddy:2
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy
+\`\`\`
+
+## docker-compose.yml
+\`\`\`yaml
+services:
+  caddy:
+    build: .
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data:/data/chatsync
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  caddy_data:
+  caddy_config:
+\`\`\`
+
+## Verification
+\`\`\`bash
+curl -X OPTIONS -i https://HOST/ -H "Origin: ${origin}" -H "Access-Control-Request-Method: PROPFIND"
+curl -u USER:PASSWORD -X PROPFIND -i https://HOST/ -H "Depth: 1"
+\`\`\`
+
+Expect 204 for OPTIONS with PROPFIND in Access-Control-Allow-Methods. A 401 on OPTIONS means auth is handling the preflight. Report the final URL, username, and generated password.`;
+  const copy = (value: string) => void navigator.clipboard?.writeText(value);
+  const save = () => { onSave({ ...draft, endpoint: draft.endpoint.trim() }); };
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "配置同步" : "Configure sync"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div className="sync-dialog-body"><section className="sync-fields"><label>{isChinese ? "WebDAV endpoint" : "WebDAV endpoint"}<input type="url" autoComplete="url" placeholder="https://sync.example.com/" value={draft.endpoint} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value })} /></label><div className="two-fields"><label>{isChinese ? "用户名" : "Username"}<input autoComplete="username" value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} /></label><label>{isChinese ? "WebDAV 密码" : "WebDAV password"}<input type="password" autoComplete="current-password" value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} /></label></div><label>{isChinese ? "加密口令" : "Encryption passphrase"}<input type="password" autoComplete="new-password" value={draft.passphrase} onChange={(event) => setDraft({ ...draft, passphrase: event.target.value })} /></label><p>{isChinese ? "口令在上传前派生加密密钥。它和 WebDAV 凭据只保留在此浏览器，以便下次打开时自动同步。" : "The passphrase derives the encryption key before upload. It and the WebDAV credentials stay in this browser so sync can run on the next visit."}</p><label className="sync-toggle"><input type="checkbox" checked={draft.includeKeys} onChange={(event) => setDraft({ ...draft, includeKeys: event.target.checked })} />{isChinese ? "同步 API keys" : "Sync API keys"}</label>{draft.includeKeys && <p className="sync-warning">{isChinese ? "API keys 会先加密再上传。请使用足够长且独特的口令。" : "API keys are encrypted before upload. Use a long, unique passphrase."}</p>}<div className="sync-config-actions"><button type="button" className="text-button" onClick={save}>{isChinese ? "保存配置" : "Save configuration"}</button></div></section><section className="sync-guide"><h3>{isChinese ? "同步教程" : "Sync server guide"}</h3><p>{isChinese ? "需要 HTTPS，且 OPTIONS 必须在 Basic Auth 之前返回 204。" : "Use HTTPS. OPTIONS must return 204 before Basic Auth runs."}</p><details open><summary>{isChinese ? "给人的 Caddy 配置" : "Caddy setup"}</summary><pre>{caddyfile}</pre><button type="button" onClick={() => copy(caddyfile)}>{isChinese ? "复制 Caddyfile" : "Copy Caddyfile"}</button></details><details><summary>{isChinese ? "给 Agent 的一键配置任务" : "One click task for an agent"}</summary><p>{isChinese ? "内容包括检测环境、Docker 回退、Tailscale、验证命令和常见 CORS 问题。" : "Includes environment checks, Docker fallback, Tailscale, verification, and common CORS failures."}</p><button type="button" onClick={() => copy(agentTask)}>{isChinese ? "复制 Agent 任务" : "Copy agent task"}</button></details></section></div></section></div>;
+}
+
 function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRename, onDelete }: { notebook: Notebook; chats: Chat[]; onBack: () => void; onCreateChat: () => void; onOpenChat: (chatId: string) => void; onRename: (title: string) => void; onDelete: () => void }) {
   const locale = useContext(LocaleContext);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -696,6 +783,7 @@ function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRen
 export default function Home() {
   const [data, setData] = useState<AppData>({ chats: [], notebooks: [] });
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
+  const [syncConfig, setSyncConfig] = useState<SyncConfig>(emptySyncConfig());
   const [hydrated, setHydrated] = useState(false);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
@@ -715,13 +803,19 @@ export default function Home() {
   const [promptTarget, setPromptTarget] = useState<{ scope: "chat" | "notebook"; id: string } | null>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
+  const [syncMenuOpen, setSyncMenuOpen] = useState(false);
+  const [syncConfigOpen, setSyncConfigOpen] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "error" | "done">("idle");
+  const [syncMessage, setSyncMessage] = useState("");
   const [backupOptions, setBackupOptions] = useState({ chats: true, settings: true, attachments: true });
   const [storageSafety, setStorageSafety] = useState<StorageSafetyStatus | null>(null);
   const settingsRef = useRef(settings);
   const namingAttempts = useRef(new Set<string>());
+  const autoSyncAttempt = useRef("");
 
   useEffect(() => {
     setSettings(loadSettings());
+    setSyncConfig(loadSyncConfig());
     void getStorageSafetyStatus().then(setStorageSafety).catch(() => undefined);
     void loadData().then((stored) => {
       const initialData = stored.chats.length
@@ -754,6 +848,30 @@ export default function Home() {
   const activeNotebook = data.notebooks.find((notebook) => notebook.id === activeNotebookId) ?? null;
   const activeSystemPrompt = activeChat?.systemPrompt ?? (activeChat?.notebookId ? data.notebooks.find((notebook) => notebook.id === activeChat.notebookId)?.systemPrompt : undefined) ?? settings.systemPrompt;
   const promptTargetItem = promptTarget?.scope === "chat" ? data.chats.find((chat) => chat.id === promptTarget.id) : promptTarget?.scope === "notebook" ? data.notebooks.find((notebook) => notebook.id === promptTarget.id) : null;
+  const syncReady = isSyncConfigured(syncConfig);
+  const updateSyncConfig = (next: SyncConfig) => { setSyncConfig(next); saveSyncConfig(next); };
+  const runSync = useCallback(async (mode: "merge" | "upload" = "merge") => {
+    if (!syncReady) return;
+    setSyncStatus("syncing");
+    setSyncMessage("");
+    try {
+      const result = await synchronizeWebDav({ config: syncConfig, data, settings, mode });
+      setData(result.data);
+      await replaceData(result.data);
+      setSettings(normalizeSettings(result.settings));
+      setSyncStatus("done");
+      setSyncMessage(`${mode === "merge" ? "Synced" : "Uploaded"}: ${result.uploaded} uploaded, ${result.downloaded} remote records.`);
+    } catch (error) {
+      setSyncStatus("error");
+      setSyncMessage(error instanceof Error ? error.message : "Sync failed.");
+    }
+  }, [data, settings, syncConfig, syncReady]);
+  useEffect(() => {
+    const key = `${syncConfig.endpoint}|${syncConfig.username}|${syncConfig.deviceId}`;
+    if (!hydrated || !syncReady || autoSyncAttempt.current === key) return;
+    autoSyncAttempt.current = key;
+    void runSync("merge");
+  }, [hydrated, runSync, syncConfig.deviceId, syncConfig.endpoint, syncConfig.username, syncReady]);
 
   const createChat = useCallback((notebookId?: string) => {
     const now = new Date().toISOString();
@@ -1018,7 +1136,7 @@ export default function Home() {
         <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><Menu /></button>
         <div className="top-model-controls"><ModelMenu settings={settings} onChange={setSettings} /><ThinkingMenu settings={settings} onChange={setSettings} /></div>
         {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action" onClick={() => setPromptTarget(activeChat ? { scope: "chat", id: activeChat.id } : { scope: "notebook", id: activeNotebook!.id })}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
-        <div className="top-actions">{activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}<div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div><button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button></div>
+        <div className="top-actions">{activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}<div className="sync-wrap"><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncMenuOpen && <div className="sync-menu"><strong>{syncReady ? (settings.language === "zh" ? "WebDAV 已配置" : "WebDAV configured") : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync("upload")}><Upload size={15} />{settings.language === "zh" ? "上传" : "Upload"}</button><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync("merge")}><RefreshCw size={15} />{settings.language === "zh" ? "同步远程" : "Sync remote"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div><div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div><button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button></div>
       </header>
       {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
     </section>
@@ -1026,6 +1144,7 @@ export default function Home() {
     {settingsOpen && <SettingsDialog settings={settings} safety={storageSafety} onChange={setSettings} onClose={() => setSettingsOpen(false)} onRequestPersistent={enablePersistentStorage} onChooseAutoBackup={configureAutomaticBackup} />}
     {promptTarget && promptTargetItem && <PromptDialog key={`${promptTarget.scope}:${promptTarget.id}`} target={promptTargetItem} scope={promptTarget.scope} settings={settings} onChange={setSettings} onSavePrompt={(prompt) => { if (promptTarget.scope === "chat") saveChatSystemPrompt(promptTarget.id, prompt); else saveNotebookSystemPrompt(promptTarget.id, prompt); }} onClose={() => setPromptTarget(null)} />}
     {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
+    {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;
 }
