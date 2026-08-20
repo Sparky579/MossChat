@@ -1,0 +1,19 @@
+[Unit]
+Description=ai-chat local web workspace
+After=network.target
+
+[Service]
+Type=simple
+User=chengsizhe
+Group=chengsizhe
+WorkingDirectory=/home/chengsizhe/ai-chat
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=256
+ExecStart=/usr/bin/node /home/chengsizhe/ai-chat/node_modules/next/dist/bin/next start --hostname 127.0.0.1 --port 4182
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

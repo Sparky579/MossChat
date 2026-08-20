@@ -1,0 +1,20 @@
+# dependencies and build output
+node_modules/
+.next/
+out/
+
+# local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# local data and backups
+*.zip
+*.sqlite
+*.sqlite3
+backups/
+
+# editor and operating system files
+.DS_Store
+.idea/
+.vscode/
