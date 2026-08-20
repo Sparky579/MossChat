@@ -37,7 +37,7 @@ import {
 } from "lucide-react";
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
-import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
+import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
@@ -78,6 +78,24 @@ type SpeechWindow = {
 const orderedProviders = (settings: AppSettings) => settings.providerOrder
   .filter((id) => settings.providers[id])
   .map((id) => [id, settings.providers[id]] as const);
+
+const PROVIDER_PRESETS = {
+  google: { label: "Gemini", name: "Google Gemini", kind: "google" as ProviderKind, baseUrl: "https://generativelanguage.googleapis.com" },
+  openai: { label: "OpenAI", name: "OpenAI", kind: "openai" as ProviderKind, baseUrl: "https://api.openai.com/v1" },
+  anthropic: { label: "Anthropic", name: "Anthropic", kind: "anthropic" as ProviderKind, baseUrl: "https://api.anthropic.com" },
+  openrouter: { label: "OpenRouter", name: "OpenRouter", kind: "openai" as ProviderKind, baseUrl: "https://openrouter.ai/api/v1" },
+} as const;
+
+type ProviderPresetId = keyof typeof PROVIDER_PRESETS;
+
+function presetFromProviderName(name: string): ProviderPresetId | null {
+  const value = name.trim().toLocaleLowerCase();
+  if (value.includes("openrouter")) return "openrouter";
+  if (value.includes("gemini") || value === "google") return "google";
+  if (value.includes("anthropic") || value.includes("anthro")) return "anthropic";
+  if (value.includes("openai")) return "openai";
+  return null;
+}
 
 const shortDate = (time: string, locale: Locale) =>
   new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", { month: "short", day: "numeric" }).format(new Date(time));
@@ -540,7 +558,16 @@ function PromptDialog({ target, scope, settings, onChange, onSavePrompt, onClose
 function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersistent, onChooseAutoBackup }: { settings: AppSettings; safety: StorageSafetyStatus | null; onChange: (settings: AppSettings) => void; onClose: () => void; onRequestPersistent: () => void; onChooseAutoBackup: () => void }) {
   const copy = useCopy();
   const [tab, setTab] = useState<"models" | "behavior" | "tools" | "privacy">("models");
-  const updateProvider = (id: ProviderId, field: "name" | "kind" | "apiKey" | "baseUrl" | "model", value: string) => onChange({ ...settings, providers: { ...settings.providers, [id]: { ...settings.providers[id], [field]: value } } });
+  const updateProvider = (id: ProviderId, field: "name" | "kind" | "apiKey" | "baseUrl" | "model", value: string) => {
+    const provider = settings.providers[id];
+    const preset = field === "name" ? presetFromProviderName(value) : null;
+    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, [field]: value, ...(preset ? { kind: PROVIDER_PRESETS[preset].kind, baseUrl: PROVIDER_PRESETS[preset].baseUrl } : {}) } } });
+  };
+  const applyProviderPreset = (id: ProviderId, presetId: ProviderPresetId) => {
+    const provider = settings.providers[id];
+    const preset = PROVIDER_PRESETS[presetId];
+    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, name: provider.name === "New provider" ? preset.name : provider.name, kind: preset.kind, baseUrl: preset.baseUrl } } });
+  };
   const updateModel = (id: ProviderId, index: number, value: string) => {
     const provider = settings.providers[id];
     const previous = provider.models[index];
@@ -559,9 +586,9 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     const models = provider.models.filter((_, itemIndex) => itemIndex !== index);
     onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models, model: provider.model === removed ? models[0] : provider.model } } });
   };
-  const addProvider = (openRouter = false) => {
+  const addProvider = () => {
     const id = newId("provider");
-    onChange({ ...settings, providers: { ...settings.providers, [id]: openRouter ? { name: "OpenRouter", kind: "openai", apiKey: "", baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4o-mini", models: ["openai/gpt-4o-mini"] } : { name: "New provider", kind: "openai", apiKey: "", baseUrl: "https://", model: "", models: [""] } }, providerOrder: [id, ...settings.providerOrder] });
+    onChange({ ...settings, providers: { ...settings.providers, [id]: { name: "New provider", kind: "openai", apiKey: "", baseUrl: "", model: "", models: [""] } }, providerOrder: [id, ...settings.providerOrder] });
   };
   const moveProvider = (id: ProviderId, direction: -1 | 1) => {
     const index = settings.providerOrder.indexOf(id);
@@ -582,7 +609,20 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     <header><div><MossMark className="app-mark settings-mark" /><h2>{copy.settings}</h2></div><button className="icon-button" onClick={onClose} aria-label={copy.done}><X /></button></header>
     <div className="settings-body"><nav>{[["models", copy.apiModels], ["behavior", copy.behavior], ["tools", copy.tools], ["privacy", copy.privacy]].map(([id, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</nav>
       <div className="settings-content">
-        {tab === "models" && <><h3>{copy.apiTitle}</h3><p className="muted">{copy.apiDetail}</p><div className="provider-actions"><button type="button" onClick={() => addProvider()}>+ Add provider</button><button type="button" onClick={() => addProvider(true)}>+ OpenRouter</button></div>{orderedProviders(settings).map(([id, provider], index) => <fieldset key={id}><legend>{provider.name}</legend><div className="provider-row-actions"><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div><label>Provider name<input value={provider.name} onChange={(event) => updateProvider(id, "name", event.target.value)} /></label><label>Protocol<select value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label><label>{copy.key}<input type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label><label>{copy.baseUrl}<input value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label><div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => updateProvider(id, "model", model)}><Check size={14} /></button><input value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" className="add-model" onClick={() => addModel(id)}>+ Add model</button></div></fieldset>)}</>}
+        {tab === "models" && <>
+          <h3>{copy.apiTitle}</h3><p className="muted">{copy.apiDetail}</p>
+          <div className="provider-actions"><button type="button" onClick={addProvider}>+ Add provider</button></div>
+          {orderedProviders(settings).map(([id, provider], index) => <fieldset key={id}>
+            <legend>{provider.name}</legend>
+            <div className="provider-row-actions"><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div>
+            <div className="provider-presets"><span>{settings.language === "zh" ? "端点预设" : "Endpoint preset"}</span>{(Object.keys(PROVIDER_PRESETS) as ProviderPresetId[]).map((presetId) => <button type="button" key={presetId} className={provider.baseUrl === PROVIDER_PRESETS[presetId].baseUrl ? "active" : ""} onClick={() => applyProviderPreset(id, presetId)}>{PROVIDER_PRESETS[presetId].label}</button>)}</div>
+            <label>Provider name<input value={provider.name} onChange={(event) => updateProvider(id, "name", event.target.value)} /></label>
+            <label>Protocol<select value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label>
+            <label>{copy.key}<input type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label>
+            <label>{copy.baseUrl}<input value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label>
+            <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => updateProvider(id, "model", model)}><Check size={14} /></button><input value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
+          </fieldset>)}
+        </>}
         {tab === "behavior" && <><h3>{copy.behaviorTitle}</h3><label>{copy.systemPrompt}<textarea value={settings.systemPrompt} onChange={(event) => onChange({ ...settings, systemPrompt: event.target.value })} placeholder={copy.systemDetail} rows={5} /></label><div className="two-fields"><label>{copy.namingProvider}<select value={settings.namingProvider} onChange={(event) => onChange({ ...settings, namingProvider: event.target.value })}>{orderedProviders(settings).map(([id, provider]) => <option key={id} value={id}>{provider.name}</option>)}</select></label><label>{copy.namingModel}<input value={settings.namingModel} onChange={(event) => onChange({ ...settings, namingModel: event.target.value })} placeholder="Leave blank to use first message" /></label></div><p className="muted">{copy.namingDetail}</p><div className="two-fields"><label>{settings.language === "zh" ? "Thinking 强度" : "Thinking level"}<select value={settings.thinkingLevel} onChange={(event) => onChange({ ...settings, thinkingLevel: event.target.value as ThinkingLevel })}><option value="off">{settings.language === "zh" ? "关闭" : "Off"}</option><option value="low">{settings.language === "zh" ? "低" : "Low"}</option><option value="medium">{settings.language === "zh" ? "中" : "Medium"}</option><option value="high">{settings.language === "zh" ? "高" : "High"}</option><option value="custom">{settings.language === "zh" ? "自定义" : "Custom"}</option></select></label>{settings.thinkingLevel === "custom" && <label>{settings.language === "zh" ? "Thinking token budget" : "Thinking token budget"}<input type="number" min="0" step="128" value={settings.thinkingBudget} onFocus={(event) => event.currentTarget.select()} onChange={(event) => onChange({ ...settings, thinkingBudget: Number(event.target.value) || 0 })} /></label>}</div><p className="muted">{settings.language === "zh" ? "自定义预算会原样传给 Anthropic / Gemini。OpenAI 兼容协议仅支持 low / medium / high，会按预算映射到最接近的档位。" : "A custom budget is sent as-is to Anthropic and Gemini. OpenAI-compatible APIs only accept low / medium / high, so it is mapped to the nearest level."}</p><label>{copy.language}<select value={settings.language} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="en">English</option><option value="zh">中文</option></select></label><label className="toggle-row"><input type="checkbox" checked={settings.sendWithEnter} onChange={(event) => onChange({ ...settings, sendWithEnter: event.target.checked })} />{copy.enterSends}</label></>}
         {tab === "tools" && <><h3>{copy.toolsTitle}</h3><p className="muted">{copy.toolsDetail}</p><label>{copy.functionDeclarations}<textarea value={settings.nativeTools.functionDeclarations} onChange={(event) => onChange({ ...settings, nativeTools: { functionDeclarations: event.target.value } })} placeholder={copy.functionDetail} rows={8} /></label></>}
         {tab === "privacy" && <><h3>{copy.privacyTitle}</h3><p>{copy.privacyDetail}</p><p className="muted">{copy.privacyHint}</p><section className="data-safety"><h4>{settings.language === "zh" ? "数据安全" : "Data safety"}</h4><dl><div><dt>{settings.language === "zh" ? "持久化存储" : "Persistent storage"}</dt><dd>{safety?.persisted ? (settings.language === "zh" ? "已启用" : "Enabled") : (settings.language === "zh" ? "尚未确认" : "Not confirmed")}</dd></div><div><dt>{settings.language === "zh" ? "存储用量" : "Storage usage"}</dt><dd>{formatBytes(safety?.usage)} / {formatBytes(safety?.quota)}</dd></div><div><dt>{settings.language === "zh" ? "自动备份" : "Automatic backup"}</dt><dd>{safety?.automaticBackup === "granted" ? (settings.language === "zh" ? "已授权文件夹" : "Folder authorized") : safety?.automaticBackup === "unsupported" ? (settings.language === "zh" ? "此浏览器不支持" : "Unsupported here") : safety?.automaticBackup === "needs-permission" ? (settings.language === "zh" ? "需要重新授权" : "Needs permission") : (settings.language === "zh" ? "未设置" : "Not configured")}</dd></div><div><dt>{settings.language === "zh" ? "上次手动导出" : "Last manual export"}</dt><dd>{safety?.lastManualBackupAt ? new Date(safety.lastManualBackupAt).toLocaleString(settings.language === "zh" ? "zh-CN" : "en-US") : "—"}</dd></div></dl>{Boolean(safety?.usage && safety?.quota && safety.usage / safety.quota >= .8) && <p className="storage-warning">{settings.language === "zh" ? "存储空间已使用 80% 以上，请清理附件或立即导出备份。" : "Storage is over 80% used. Clear attachments or export a backup now."}</p>}<div className="provider-actions">{!safety?.persisted && <button type="button" onClick={onRequestPersistent}>{settings.language === "zh" ? "申请持久化存储" : "Request persistent storage"}</button>}{safety?.automaticBackup !== "unsupported" && <button type="button" onClick={onChooseAutoBackup}>{settings.language === "zh" ? "选择自动备份文件夹" : "Choose auto-backup folder"}</button>}</div><p className="muted">{settings.language === "zh" ? "自动备份仅在 Chrome / Edge 桌面版的已授权文件夹中运行，每 6 小时最多一次；清除浏览器数据不会清除该文件夹内的备份。" : "Automatic backup uses an authorized Chrome or Edge desktop folder, at most once every six hours. Browser data clearing does not remove files in that folder."}</p></section></>}
@@ -639,9 +679,18 @@ function FeedbackDialog({ target, onClose }: { target: FeedbackTarget | null; on
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="feedback-dialog" role="dialog" aria-modal="true" aria-labelledby="feedback-title" onMouseDown={(event) => event.stopPropagation()}><header><div><MessageSquareText size={20} /><h2 id="feedback-title">{isChinese ? "反馈" : "Feedback"}</h2></div><button className="icon-button" type="button" aria-label={isChinese ? "关闭" : "Close"} onClick={onClose}><X /></button></header>{sent ? <div className="feedback-sent"><h3>{isChinese ? "已发送，谢谢。" : "Thanks, your feedback was sent."}</h3><p>{isChinese ? "我们会查看每一条反馈。" : "We review every submission."}</p><button type="button" className="text-button" onClick={onClose}>{isChinese ? "完成" : "Done"}</button></div> : <form onSubmit={submit}><div className="feedback-body"><label>{isChinese ? "有什么坏了或者缺什么？" : "What is broken or missing?"}<textarea autoFocus value={message} maxLength={4000} onChange={(event) => setMessage(event.target.value)} /></label>{target?.response && <p className="feedback-context">{isChinese ? "这条回答会随反馈一同发送。" : "This response will be included with your feedback."}</p>}<label>{isChinese ? "邮箱（可选，想收到回复就填）" : "Email (optional, only if you want a reply)"}<input type="email" inputMode="email" autoComplete="email" value={email} maxLength={254} onChange={(event) => setEmail(event.target.value)} /></label><label className="feedback-subscribe"><input type="checkbox" checked={subscribe} onChange={(event) => setSubscribe(event.target.checked)} />{isChinese ? "也通知我新版本（大约每月一封）" : "Also notify me about new versions (about one email a month)"}</label><p className="feedback-privacy">{isChinese ? "反馈会发送到 MossChat 的反馈邮箱。若勾选订阅，邮箱会加入新版本通知名单。" : "Feedback is sent to the MossChat feedback mailbox. If you opt in, your email is added to the release update list."}</p>{error && <p className="feedback-error" role="alert">{error}</p>}</div><footer><button type="button" className="feedback-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button><button type="submit" className="text-button" disabled={sending}>{sending ? (isChinese ? "发送中…" : "Sending…") : (isChinese ? "发送反馈" : "Send feedback")}</button></footer></form>}</section></div>;
 }
 
-function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRename }: { notebook: Notebook; chats: Chat[]; onBack: () => void; onCreateChat: () => void; onOpenChat: (chatId: string) => void; onRename: (title: string) => void }) {
+function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRename, onDelete }: { notebook: Notebook; chats: Chat[]; onBack: () => void; onCreateChat: () => void; onOpenChat: (chatId: string) => void; onRename: (title: string) => void; onDelete: () => void }) {
   const locale = useContext(LocaleContext);
-  return <main className="notebook-view"><header><div className="notebook-title"><div className="notebook-heading"><BookOpen size={22} /><input value={notebook.title} onChange={(event) => onRename(event.target.value)} aria-label={locale === "zh" ? "笔记本名称" : "Notebook name"} /></div><span>{locale === "zh" ? `${chats.length} 个会话` : `${chats.length} chats`}</span></div><div className="notebook-actions"><button type="button" className="top-icon" onClick={onBack}><ChevronLeft size={16} />{locale === "zh" ? "返回" : "Back"}</button><button type="button" className="top-icon" onClick={onCreateChat}><MessageSquarePlus size={16} />{locale === "zh" ? "新建会话" : "New chat"}</button></div></header><section className="notebook-chats"><h3>{locale === "zh" ? "会话" : "Chats"}</h3>{chats.length ? chats.map((chat) => <button key={chat.id} type="button" onClick={() => onOpenChat(chat.id)}><span><strong>{chat.title}</strong><small>{searchExcerpt(chat, "") || (locale === "zh" ? "还没有消息" : "No messages yet")}</small></span><time>{shortDate(chat.updatedAt, locale)}</time></button>) : <div className="notebook-empty"><p>{locale === "zh" ? "这个 Notebook 还没有会话。" : "This Notebook has no chats yet."}</p><button className="new-chat" type="button" onClick={onCreateChat}><MessageSquarePlus size={17} />{locale === "zh" ? "创建第一条会话" : "Create the first chat"}</button></div>}</section></main>;
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(notebook.title);
+  useEffect(() => setTitleDraft(notebook.title), [notebook.id, notebook.title]);
+  const saveTitle = () => {
+    const title = titleDraft.trim().slice(0, 120);
+    if (title) onRename(title);
+    else setTitleDraft(notebook.title);
+    setEditingTitle(false);
+  };
+  return <main className="notebook-view"><header><div className="notebook-title"><div className="notebook-heading"><BookOpen size={22} />{editingTitle ? <input autoFocus value={titleDraft} aria-label={locale === "zh" ? "笔记本名称" : "Notebook name"} onChange={(event) => setTitleDraft(event.target.value)} onBlur={saveTitle} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveTitle(); } if (event.key === "Escape") { setTitleDraft(notebook.title); setEditingTitle(false); } }} /> : <button type="button" className="notebook-title-button" title={locale === "zh" ? "重命名 Notebook" : "Rename Notebook"} onClick={() => setEditingTitle(true)}><span>{notebook.title}</span><Pencil size={16} /></button>}</div><span>{locale === "zh" ? `${chats.length} 个会话` : `${chats.length} chats`}</span></div><div className="notebook-actions"><button type="button" className="top-icon" onClick={onBack}><ChevronLeft size={16} />{locale === "zh" ? "返回" : "Back"}</button><button type="button" className="top-icon" onClick={() => setEditingTitle(true)}><Pencil size={16} />{locale === "zh" ? "重命名" : "Rename"}</button><button type="button" className="top-icon" onClick={onCreateChat}><MessageSquarePlus size={16} />{locale === "zh" ? "新建会话" : "New chat"}</button><button type="button" className="top-icon notebook-delete" onClick={onDelete}><Trash2 size={16} />{locale === "zh" ? "删除" : "Delete"}</button></div></header><section className="notebook-chats"><h3>{locale === "zh" ? "会话" : "Chats"}</h3>{chats.length ? chats.map((chat) => <button key={chat.id} type="button" onClick={() => onOpenChat(chat.id)}><span><strong>{chat.title}</strong><small>{searchExcerpt(chat, "") || (locale === "zh" ? "还没有消息" : "No messages yet")}</small></span><time>{shortDate(chat.updatedAt, locale)}</time></button>) : <div className="notebook-empty"><p>{locale === "zh" ? "这个 Notebook 还没有会话。" : "This Notebook has no chats yet."}</p><button className="new-chat" type="button" onClick={onCreateChat}><MessageSquarePlus size={17} />{locale === "zh" ? "创建第一条会话" : "Create the first chat"}</button></div>}</section></main>;
 }
 
 export default function Home() {
@@ -651,6 +700,9 @@ export default function Home() {
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [activeNotebookId, setActiveNotebookId] = useState<string | null>(null);
   const [notebookViewOpen, setNotebookViewOpen] = useState(false);
+  const [notebookCreateOpen, setNotebookCreateOpen] = useState(false);
+  const [notebookTitleDraft, setNotebookTitleDraft] = useState("");
+  const [notebookCreateChatId, setNotebookCreateChatId] = useState<string | null>(null);
   const [expandedChatId, setExpandedChatId] = useState<string | null>(null);
   const [addingNotebookForChatId, setAddingNotebookForChatId] = useState<string | null>(null);
   const [renamingChatId, setRenamingChatId] = useState<string | null>(null);
@@ -712,9 +764,9 @@ export default function Home() {
     void saveChatDelta(chat, []);
   }, []);
 
-  const createNotebook = (open = true) => {
+  const createNotebook = (title = "", open = true) => {
     const now = new Date().toISOString();
-    const notebook: Notebook = { id: newId("notebook"), title: "Untitled notebook", content: "", attachments: [], createdAt: now, updatedAt: now };
+    const notebook: Notebook = { id: newId("notebook"), title: title.trim().slice(0, 120) || "Untitled notebook", content: "", attachments: [], createdAt: now, updatedAt: now };
     setData((current) => ({ ...current, notebooks: [notebook, ...current.notebooks] }));
     setActiveNotebookId(notebook.id);
     if (open) {
@@ -723,6 +775,22 @@ export default function Home() {
     }
     void saveNotebook(notebook);
     return notebook;
+  };
+
+  const beginCreateNotebook = (chatId: string | null = null) => {
+    setNotebookCreateChatId(chatId);
+    setNotebookTitleDraft("");
+    setNotebookCreateOpen(true);
+  };
+
+  const saveNewNotebook = () => {
+    const title = notebookTitleDraft.trim();
+    if (!title) return;
+    const notebook = createNotebook(title, !notebookCreateChatId);
+    if (notebookCreateChatId) addChatToNotebook(notebookCreateChatId, notebook.id);
+    setNotebookCreateOpen(false);
+    setNotebookTitleDraft("");
+    setNotebookCreateChatId(null);
   };
 
   const handleSnapshot = useCallback((chatId: string, messages: SavedMessage[], dirtyMessageIds: string[] = []) => {
@@ -815,8 +883,7 @@ export default function Home() {
   };
 
   const createNotebookForChat = (chatId: string) => {
-    const notebook = createNotebook(false);
-    addChatToNotebook(chatId, notebook.id);
+    beginCreateNotebook(chatId);
   };
 
   const openNotebook = (notebookId: string) => {
@@ -829,11 +896,27 @@ export default function Home() {
 
   const renameNotebook = (notebookId: string, title: string) => {
     const target = data.notebooks.find((notebook) => notebook.id === notebookId);
-    const nextTitle = title.slice(0, 120);
-    if (!target || !nextTitle.trim() || nextTitle === target.title) return;
+    const nextTitle = title.trim().slice(0, 120);
+    if (!target || !nextTitle || nextTitle === target.title) return;
     const nextNotebook = { ...target, title: nextTitle, updatedAt: new Date().toISOString() };
     setData((current) => ({ ...current, notebooks: current.notebooks.map((notebook) => notebook.id === notebookId ? nextNotebook : notebook) }));
     void saveNotebook(nextNotebook);
+  };
+
+  const removeNotebook = (notebookId: string) => {
+    const target = data.notebooks.find((notebook) => notebook.id === notebookId);
+    if (!target) return;
+    const prompt = settings.language === "zh" ? `删除「${target.title}」？其中的会话会保留在最近对话中。` : `Delete “${target.title}”? Its chats will remain in Recents.`;
+    if (!window.confirm(prompt)) return;
+    const updatedChats = data.chats.filter((chat) => chat.notebookId === notebookId).map((chat) => ({ ...chat, notebookId: undefined, updatedAt: new Date().toISOString() }));
+    setData((current) => ({ ...current, notebooks: current.notebooks.filter((notebook) => notebook.id !== notebookId), chats: current.chats.map((chat) => updatedChats.find((updated) => updated.id === chat.id) ?? chat) }));
+    for (const chat of updatedChats) void saveChatMetadata(chat);
+    void deleteNotebook(notebookId);
+    if (activeNotebookId === notebookId) {
+      setActiveNotebookId(null);
+      setNotebookViewOpen(false);
+      setActiveChatId(updatedChats[0]?.id ?? data.chats.find((chat) => chat.id !== activeChatId)?.id ?? null);
+    }
   };
 
   const saveChatSystemPrompt = (chatId: string, systemPrompt: string) => {
@@ -926,7 +1009,7 @@ export default function Home() {
       <div className="brand-row"><button type="button" className="brand" onClick={() => setSidebarOpen(false)}><MossMark className="app-mark brand-mark" /><span>MossChat</span></button><button className="icon-button collapse-button" onClick={() => setSidebarOpen(false)} aria-label="Collapse sidebar"><PanelLeftClose size={19} /></button></div>
       <button className="new-chat" type="button" onClick={() => createChat()}><Pencil size={17} />{copy.newChat}<span>Ctrl + Shift + O</span></button>
       <div className="side-nav"><button onClick={() => setSearchOpen(true)}><Search size={17} />{copy.searchChats}</button></div>
-      <div className="side-section notebook-section"><div className="section-label"><span>{copy.notebooks}</span><button className="icon-button" type="button" aria-label={copy.newNotebook} title={copy.newNotebook} onClick={() => createNotebook()}><Plus size={16} /></button></div>{data.notebooks.map((notebook) => { const count = data.chats.filter((chat) => chat.notebookId === notebook.id).length; return <button key={notebook.id} className={`side-item notebook-item ${notebookViewOpen && activeNotebookId === notebook.id ? "active" : ""}`} type="button" onClick={() => openNotebook(notebook.id)}><BookOpen size={16} /><span>{notebook.title}</span><small>{count}</small></button>; })}</div>
+      <div className="side-section notebook-section"><div className="section-label"><span>{copy.notebooks}</span><button className="icon-button" type="button" aria-label={copy.newNotebook} title={copy.newNotebook} onClick={() => beginCreateNotebook()}><Plus size={16} /></button></div>{notebookCreateOpen && <form className="new-notebook-form" onSubmit={(event) => { event.preventDefault(); saveNewNotebook(); }}><input autoFocus value={notebookTitleDraft} maxLength={120} aria-label={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} placeholder={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} onChange={(event) => setNotebookTitleDraft(event.target.value)} /><button type="submit" className="icon-button" aria-label={settings.language === "zh" ? "创建" : "Create"}><Check size={16} /></button><button type="button" className="icon-button" aria-label={settings.language === "zh" ? "取消" : "Cancel"} onClick={() => { setNotebookCreateOpen(false); setNotebookCreateChatId(null); }}><X size={16} /></button>{notebookCreateChatId && <small>{settings.language === "zh" ? "创建后会将当前对话加入其中" : "The current chat will be added"}</small>}</form>}{data.notebooks.map((notebook) => { const count = data.chats.filter((chat) => chat.notebookId === notebook.id).length; return <button key={notebook.id} className={`side-item notebook-item ${notebookViewOpen && activeNotebookId === notebook.id ? "active" : ""}`} type="button" onClick={() => openNotebook(notebook.id)}><BookOpen size={16} /><span>{notebook.title}</span><small>{count}</small></button>; })}</div>
       <div className="side-section recent-section"><div className="section-label"><span>{copy.recent}</span></div>{visibleChats.slice(0, 11).map((chat) => <div className={`side-item chat-item ${activeChatId === chat.id && !notebookViewOpen ? "active" : ""}`} key={chat.id}><div className="chat-row">{renamingChatId === chat.id ? <input className="chat-title-editor" autoFocus value={chatTitleDraft} aria-label={settings.language === "zh" ? "会话标题" : "Chat title"} onChange={(event) => setChatTitleDraft(event.target.value)} onBlur={() => saveRenamedChat(chat.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveRenamedChat(chat.id); } if (event.key === "Escape") setRenamingChatId(null); }} /> : <button className="chat-select" type="button" title={chat.title} onClick={() => selectChat(chat.id)}><span className="chat-title">{chat.title}</span>{chat.pinned && <Pin size={13} fill="currentColor" />}</button>}<button className="chat-more" type="button" aria-label={settings.language === "zh" ? "会话操作" : "Chat actions"} title={settings.language === "zh" ? "会话操作" : "Chat actions"} onClick={() => { setExpandedChatId((id) => id === chat.id ? null : chat.id); setAddingNotebookForChatId(null); }}><MoreHorizontal size={16} /></button></div>{expandedChatId === chat.id && <div className="chat-actions-panel"><button type="button" onClick={() => toggleChatPin(chat.id)}><Pin size={14} fill={chat.pinned ? "currentColor" : "none"} />{chat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin") : (settings.language === "zh" ? "置顶" : "Pin")}</button><button type="button" onClick={() => beginRenameChat(chat.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" onClick={() => setAddingNotebookForChatId((id) => id === chat.id ? null : chat.id)}><BookOpen size={14} />{settings.language === "zh" ? "添加到 Notebook" : "Add to notebook"}</button>{addingNotebookForChatId === chat.id && <div className="action-notebook-list">{data.notebooks.map((notebook) => <button type="button" key={notebook.id} onClick={() => addChatToNotebook(chat.id, notebook.id)}>{notebook.title}</button>)}<button type="button" onClick={() => createNotebookForChat(chat.id)}><Plus size={14} />{settings.language === "zh" ? "新建 Notebook" : "New notebook"}</button></div>}<button type="button" className="danger" onClick={() => removeChat(chat.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}</div>)}</div>
       <div className="profile-row"><div className="profile-avatar">A</div><div><strong>{copy.localWorkspace}</strong><small>{copy.browserOnly}</small></div><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label={copy.settings}><Settings size={18} /></button></div>
     </aside>
@@ -937,7 +1020,7 @@ export default function Home() {
         {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action" onClick={() => setPromptTarget(activeChat ? { scope: "chat", id: activeChat.id } : { scope: "notebook", id: activeNotebook!.id })}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
         <div className="top-actions">{activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}<div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div><button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button></div>
       </header>
-      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
+      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
     </section>
     {searchOpen && <div className="modal-backdrop" onMouseDown={() => setSearchOpen(false)}><section className="search-dialog" onMouseDown={(event) => event.stopPropagation()}><Search size={19} /><input autoFocus placeholder={copy.search} value={query} onChange={(event) => setQuery(event.target.value)} /><button className="icon-button" onClick={() => setSearchOpen(false)}><X /></button><div className="search-results"><p>{settings.language === "zh" ? "结果" : "Results"}</p>{searchResults.map((chat) => <button key={chat.id} onClick={() => { selectChat(chat.id); setSearchOpen(false); }}><span><strong>{chat.title}</strong><small>{searchExcerpt(chat, query)}</small></span><time>{shortDate(chat.updatedAt, settings.language)}</time></button>)}{query.trim() && !searchResults.length && <p className="search-empty">{settings.language === "zh" ? "没有匹配的对话内容。" : "No matching chat content."}</p>}</div></section></div>}
     {settingsOpen && <SettingsDialog settings={settings} safety={storageSafety} onChange={setSettings} onClose={() => setSettingsOpen(false)} onRequestPersistent={enablePersistentStorage} onChooseAutoBackup={configureAutomaticBackup} />}
