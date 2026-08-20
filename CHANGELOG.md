@@ -2,7 +2,7 @@
 
 ## 0.2.1
 
-Installable PWA with an app manifest, offline shell cache, and install guidance for desktop and mobile browsers.
+PWA with an app manifest, offline shell cache, and add-to-desktop guidance for desktop and mobile browsers.
 
 ## 0.2.0
 

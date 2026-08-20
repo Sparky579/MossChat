@@ -39,7 +39,7 @@ There is no MossChat account service, API proxy, or server side key store.
 | Notebooks | Group conversations, rename notebooks, and set a notebook system prompt inherited by its chats |
 | Local data | Per message IndexedDB storage, persistent storage request, ZIP backup, automatic folder backup, and legacy JSON import |
 | Optional sync | Encrypted WebDAV sync with per-record files, device-side merge, and setup guidance for Caddy |
-| Interface | English by default, Simplified Chinese option, voice input, responsive layout, browser local settings, and an installable PWA |
+| Interface | English by default, Simplified Chinese option, voice input, responsive layout, browser local settings, and a PWA that can be added to the desktop |
 
 ## Getting started
 
