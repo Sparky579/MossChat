@@ -42,8 +42,6 @@ There is no MossChat account service, API proxy, or server side key store.
 
 ## Getting started
 
-Use the hosted app at [chat.utilgadgets.com](https://chat.utilgadgets.com). No account is required.
-
 To run your own copy, use a current Node.js release.
 
 ```bash
