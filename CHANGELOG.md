@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.6
+
+Sync setup now has a bidirectional SYNC_CONFIG JSON editor. It starts as `{}`, accepts raw JSON or an optional marked block, and immediately mirrors endpoint, credentials, passphrase, and key-sync settings in either direction.
+
 ## 0.2.5
 
 Saved providers are locked by default. Their endpoint and preset stay untouched until you choose Edit provider; new providers begin in edit mode.

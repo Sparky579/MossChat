@@ -17,7 +17,7 @@ export type SyncConfig = {
   includeKeys: boolean;
 };
 
-type AgentSyncConfig = { url?: unknown; username?: unknown; password?: unknown; protocol?: unknown; path?: unknown };
+type SyncConfigPayload = { endpoint?: unknown; url?: unknown; username?: unknown; password?: unknown; protocol?: unknown; path?: unknown; passphrase?: unknown; includeKeys?: unknown };
 type EncryptedEnvelope = { v: 1; iv: string; data: string };
 type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown; clock?: number; deviceId?: string };
 /** Only sync metadata is kept locally: no chat body, attachment bytes, or encrypted record cache. */
@@ -36,24 +36,56 @@ export function loadSyncConfig(): SyncConfig {
 export function saveSyncConfig(config: SyncConfig) { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); }
 export function isSyncConfigured(config: SyncConfig) { return Boolean(config.endpoint && config.username && config.password && config.passphrase); }
 
-/** Accepts the machine-readable block emitted by the sync-server setup task. */
-export function parseAgentSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "username" | "password"> {
-  const match = value.match(/===SYNC_CONFIG_START===\s*([\s\S]*?)\s*===SYNC_CONFIG_END===/);
-  if (!match) throw new Error("Paste the complete SYNC_CONFIG block from the setup result.");
-  let parsed: AgentSyncConfig;
-  try { parsed = JSON.parse(match[1]) as AgentSyncConfig; } catch { throw new Error("The SYNC_CONFIG block does not contain valid JSON."); }
-  if (parsed.protocol !== "webdav") throw new Error("This SYNC_CONFIG block is not for WebDAV.");
-  if (typeof parsed.url !== "string" || typeof parsed.username !== "string" || typeof parsed.password !== "string" || typeof parsed.path !== "string") throw new Error("The SYNC_CONFIG block is missing a URL, username, password, or path.");
-  let source: URL;
-  try { source = new URL(parsed.url); } catch { throw new Error("The SYNC_CONFIG URL is invalid."); }
-  if (source.protocol !== "https:" && source.hostname !== "localhost" && source.hostname !== "127.0.0.1") throw new Error("The SYNC_CONFIG URL must use HTTPS.");
-  const path = parsed.path.trim();
-  if (!path.startsWith("/")) throw new Error("The SYNC_CONFIG path must start with a slash.");
-  const endpoint = new URL(path, source.origin);
-  endpoint.search = "";
-  endpoint.hash = "";
-  if (!endpoint.pathname.endsWith("/")) endpoint.pathname += "/";
-  return { endpoint: endpoint.href, username: parsed.username, password: parsed.password };
+/** Reads raw SYNC_CONFIG JSON or the optional ===SYNC_CONFIG_*=== wrapper. */
+export function parseSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "username" | "password" | "passphrase" | "includeKeys"> {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "{}") return { endpoint: "", username: "", password: "", passphrase: "", includeKeys: false };
+  const match = trimmed.match(/===SYNC_CONFIG_START===\s*([\s\S]*?)\s*===SYNC_CONFIG_END===/);
+  let parsed: SyncConfigPayload;
+  try { parsed = JSON.parse(match?.[1] ?? trimmed) as SyncConfigPayload; } catch { throw new Error("SYNC_CONFIG must contain valid JSON."); }
+  if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("SYNC_CONFIG must be a JSON object.");
+  if (parsed.protocol !== undefined && parsed.protocol !== "webdav") throw new Error("SYNC_CONFIG is not for WebDAV.");
+  let endpoint = "";
+  if (typeof parsed.endpoint === "string") endpoint = parsed.endpoint.trim();
+  else if (parsed.url !== undefined || parsed.path !== undefined) {
+    if (typeof parsed.url !== "string" || typeof parsed.path !== "string") throw new Error("SYNC_CONFIG needs both url and path.");
+    let source: URL;
+    try { source = new URL(parsed.url); } catch { throw new Error("SYNC_CONFIG has an invalid URL."); }
+    if (source.protocol !== "https:" && source.hostname !== "localhost" && source.hostname !== "127.0.0.1") throw new Error("SYNC_CONFIG URL must use HTTPS.");
+    const path = parsed.path.trim();
+    if (!path.startsWith("/")) throw new Error("SYNC_CONFIG path must start with a slash.");
+    const joined = new URL(path, source.origin);
+    joined.search = "";
+    joined.hash = "";
+    if (!joined.pathname.endsWith("/")) joined.pathname += "/";
+    endpoint = joined.href;
+  }
+  for (const [name, field] of [["username", parsed.username], ["password", parsed.password], ["passphrase", parsed.passphrase]] as const) {
+    if (field !== undefined && typeof field !== "string") throw new Error(`SYNC_CONFIG ${name} must be a string.`);
+  }
+  if (parsed.includeKeys !== undefined && typeof parsed.includeKeys !== "boolean") throw new Error("SYNC_CONFIG includeKeys must be true or false.");
+  return { endpoint, username: typeof parsed.username === "string" ? parsed.username : "", password: typeof parsed.password === "string" ? parsed.password : "", passphrase: typeof parsed.passphrase === "string" ? parsed.passphrase : "", includeKeys: parsed.includeKeys === true };
+}
+
+export function syncConfigJson(config: Pick<SyncConfig, "endpoint" | "username" | "password" | "passphrase" | "includeKeys">) {
+  const value: Record<string, string | boolean> = {};
+  const endpoint = config.endpoint.trim();
+  if (endpoint) {
+    try {
+      const url = new URL(endpoint);
+      value.url = url.origin;
+      value.username = config.username;
+      value.password = config.password;
+      value.protocol = "webdav";
+      value.path = url.pathname || "/";
+    } catch { value.endpoint = endpoint; }
+  } else {
+    if (config.username) value.username = config.username;
+    if (config.password) value.password = config.password;
+  }
+  if (config.passphrase) value.passphrase = config.passphrase;
+  if (config.includeKeys) value.includeKeys = true;
+  return JSON.stringify(value, null, 2);
 }
 
 function configScope(config: SyncConfig) { return `${config.deviceId}:${config.endpoint}`; }
