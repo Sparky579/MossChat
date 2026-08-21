@@ -556,8 +556,10 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
   const edit = (index: number, edited: string) => {
     const target = chat.messages[index];
     if (!target || target.role !== "user") return;
-    const existing = messageText(target);
-    if (!edited || edited === existing) return;
+    // “Save & retry” should retry even when the user did not change the text.
+    // Previously that common mobile flow returned early and looked like the
+    // button had done nothing.
+    if (!edited) return;
     const before = chat.messages.slice(0, index);
     void run([...before, { ...target, content: [{ type: "text", text: edited }], createdAt: new Date().toISOString() }]);
   };
