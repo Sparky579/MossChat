@@ -13,10 +13,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "tsc --noEmit",
+    "check": "npm run lint && npm run build"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.15.11",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",
@@ -25,16 +25,16 @@
     "katex": "^0.16.47",
     "lucide-react": "^0.468.0",
     "mammoth": "^1.9.1",
-    "next": "^15.5.7",
+    "next": "^16.3.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "streamdown": "^2.5.0"
   },
   "devDependencies": {
+    "@assistant-ui/react": "^0.15.16",
     "@types/node": "20.17.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "puppeteer-core": "^24.43.1",
     "typescript": "^5.7.2"
   }
 }

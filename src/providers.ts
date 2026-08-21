@@ -13,6 +13,7 @@ type ContentPart = {
   callId?: string;
   inputTokens?: number;
   outputTokens?: number;
+  extractedText?: string;
 };
 
 type NativeFunctionDeclaration = {
@@ -109,6 +110,12 @@ const getMime = (value: string, fallback: string): string => {
   return match?.[1] ?? fallback;
 };
 
+const attachmentText = (part: ContentPart) => {
+  const name = part.filename ?? "document";
+  const extracted = part.extractedText?.trim();
+  return extracted ? `[Attachment: ${name}]\n${extracted}` : `[Attachment: ${name}]`;
+};
+
 async function* parseSseEvents(response: Response): AsyncGenerator<Record<string, unknown>> {
   if (!response.body) return;
   const reader = response.body.getReader();
@@ -170,7 +177,7 @@ function openAiMessages(messages: readonly ThreadMessage[]) {
           content.push({ type: "image_url", image_url: { url: part.image } });
         }
         if (part.type === "file") {
-          content.push({ type: "text", text: `\n[附件：${part.filename ?? "document"}]` });
+          content.push({ type: "text", text: attachmentText(part) });
         }
       }
       return {
@@ -216,6 +223,7 @@ function anthropicMessages(messages: readonly ThreadMessage[]) {
             source: { type: "base64", media_type: "application/pdf", data: getBase64(part.data) },
           });
         }
+        if (part.type === "file" && part.extractedText) content.push({ type: "text", text: attachmentText(part) });
       }
       return { role: message.role === "assistant" ? "assistant" : "user", content };
     });
@@ -242,6 +250,7 @@ function googleContents(messages: readonly ThreadMessage[]) {
         if (part.type === "file" && part.data) {
           parts.push({ inline_data: { mime_type: part.mimeType ?? "application/octet-stream", data: getBase64(part.data) } });
         }
+        if (part.type === "file" && part.extractedText) parts.push({ text: attachmentText(part) });
       }
       return { role: message.role === "assistant" ? "model" : "user", parts };
     });

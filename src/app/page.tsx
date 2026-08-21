@@ -41,9 +41,12 @@ import {
 } from "lucide-react";
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
-import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
+import { chatSearchText, chatToMarkdown, compactContext, estimatedTokens, fallbackTitle, firstText, functionCallFromText, inflateMessages, messageParts, messageText, messageUsage, savedAttachmentFromDraft, searchExcerpt, visibleMessagesAfterClear, type ContentPart, type FileAttachmentDraft, type FunctionCallRequest } from "@/chat-content";
+import { parseProviderJson, serializeProviderJson } from "@/provider-json";
+import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, settingsWithoutImportedKeys, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, SYNC_CONFIGURATION_CHANGED_ERROR, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
-import type { AppData, AppSettings, Chat, Notebook, NotebookPromptMode, PromptPreset, ProviderId, ProviderKind, ProviderSettings, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
+import type { AppData, AppSettings, Chat, Notebook, NotebookPromptMode, PromptPreset, ProviderId, ProviderKind, ProviderSettings, SavedMessage, ThinkingLevel } from "@/types";
+import { useDismissOnOutside } from "@/use-dismiss-on-outside";
 
 type Locale = "en" | "zh";
 
@@ -105,46 +108,6 @@ const orderedProviders = (settings: AppSettings) => settings.providerOrder
 const providerEmoji = (provider: AppSettings["providers"][string] | undefined) => provider?.emoji?.trim() || "🤖";
 const COMMON_PROVIDER_EMOJIS = ["🤖", "🧠", "✨", "🔮", "⚡", "🚀", "🦙", "🐱", "🐳", "🦉", "🧩", "🌿"];
 
-type ProviderJsonSource = Record<string, unknown>;
-
-function readProviderJson(value: string): ProviderSettings[] {
-  let parsed: unknown;
-  try { parsed = JSON.parse(value); } catch { throw new Error("JSON 格式不正确。"); }
-  const object = (candidate: unknown): candidate is ProviderJsonSource => Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate);
-  const candidates = Array.isArray(parsed)
-    ? parsed
-    : object(parsed) && Array.isArray(parsed.providers)
-      ? parsed.providers
-      : object(parsed) && object(parsed.providers)
-        ? Object.values(parsed.providers)
-        : [parsed];
-  if (!candidates.length) throw new Error("至少需要一个渠道商配置。");
-  if (candidates.length > 30) throw new Error("一次最多导入 30 个渠道商。");
-  return candidates.map((candidate, index) => {
-    if (!object(candidate)) throw new Error(`第 ${index + 1} 个渠道商必须是 JSON 对象。`);
-    const text = (keys: string[], label: string, required = false) => {
-      const value = keys.map((key) => candidate[key]).find((item) => item !== undefined);
-      if (value === undefined && !required) return "";
-      if (typeof value !== "string") throw new Error(`第 ${index + 1} 个渠道商的 ${label} 必须是文本。`);
-      const trimmed = value.trim();
-      if (required && !trimmed) throw new Error(`第 ${index + 1} 个渠道商缺少 ${label}。`);
-      return trimmed;
-    };
-    const name = text(["name", "providerName"], "name", true).slice(0, 120);
-    const kindValue = text(["kind", "protocol"], "kind", true);
-    if (!(["openai", "anthropic", "google"] as const).includes(kindValue as ProviderKind)) throw new Error(`第 ${index + 1} 个渠道商的 kind 必须是 openai、anthropic 或 google。`);
-    const baseUrl = text(["baseUrl", "endpoint"], "baseUrl", true);
-    const apiKey = text(["apiKey", "key"], "apiKey");
-    const emoji = text(["emoji"], "emoji").slice(0, 16) || "🤖";
-    const model = text(["model"], "model");
-    const rawModels = candidate.models;
-    if (rawModels !== undefined && (!Array.isArray(rawModels) || rawModels.some((item) => typeof item !== "string"))) throw new Error(`第 ${index + 1} 个渠道商的 models 必须是文本数组。`);
-    const models = [...new Set([...(rawModels as string[] | undefined ?? []), model].map((item) => item.trim()).filter(Boolean))];
-    if (!models.length) throw new Error(`第 ${index + 1} 个渠道商至少需要一个 model 或 models。`);
-    return { name, kind: kindValue as ProviderKind, apiKey, baseUrl, model: model && models.includes(model) ? model : models[0], models, emoji };
-  });
-}
-
 const combinedNotebookPrompt = (chat: Chat | null, notebook: Notebook | undefined, globalPrompt: string) => {
   if (chat?.systemPrompt !== undefined) return chat.systemPrompt;
   const notebookPrompt = notebook?.systemPrompt?.trim() ?? "";
@@ -194,74 +157,12 @@ function syncAge(time: string | null, now: number, locale: Locale) {
   return locale === "zh" ? `已同步 · ${hours} 小时前` : `Synced · ${hours}h ago`;
 }
 
-const toDataUrl = (file: File) =>
-  new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-
-function inflateMessages(messages: SavedMessage[]) {
-  return messages.map((message) => ({
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    createdAt: new Date(message.createdAt),
-    attachments: message.attachments,
-  }));
-}
-
-function firstText(messages: SavedMessage[]): string {
-  const first = messages.find((message) => message.role === "user");
-  if (!first) return "";
-  return first.content
-    .filter((part) => part.type === "text")
-    .map((part) => String(part.text ?? ""))
-    .join("\n")
-    .trim();
-}
-
-function fallbackTitle(text: string): string {
-  const firstChunk = text.split(/[\n。！？!?]/)[0]?.trim() || text.trim();
-  return `${firstChunk.slice(0, 28)}${firstChunk.length > 28 ? "…" : ""}` || "New chat";
-}
-
-function chatToMarkdown(chat: Chat, locale: Locale): string {
-  const turns = chat.messages.map((message) => {
-    const label = message.role === "user" ? (locale === "zh" ? "你" : "You") : message.role === "assistant" ? "AI" : (locale === "zh" ? "系统" : "System");
-    const content = message.content
-      .map((part) => part.type === "text" ? String(part.text ?? "") : part.type === "image" ? "[图片附件]" : `[附件：${String(part.filename ?? "文件")}]`)
-      .join("\n");
-    const attachments = message.attachments?.map((attachment) => attachment.type === "image" ? `[${locale === "zh" ? "图片附件" : "Image attachment"}: ${attachment.name}]` : `[${locale === "zh" ? "附件" : "Attachment"}: ${attachment.name}]`).join("\n") ?? "";
-    return `## ${label}\n\n${[content, attachments].filter(Boolean).join("\n")}`;
-  });
-  return `# ${chat.title}\n\n${locale === "zh" ? "导出时间" : "Exported"}: ${new Date().toLocaleString(locale === "zh" ? "zh-CN" : "en-US")}\n\n${turns.join("\n\n---\n\n")}`;
-}
-
-type DraftAttachment = {
-  id: string;
-  file: File;
-  previewUrl?: string;
-};
+type DraftAttachment = FileAttachmentDraft & { previewUrl?: string };
 
 const MAX_FILES_PER_MESSAGE = 5;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 20 * 1024 * 1024;
 const MAX_CONTEXT_MESSAGES = 24;
-
-type ContentPart = {
-  type?: unknown;
-  text?: unknown;
-  image?: unknown;
-  data?: unknown;
-  filename?: unknown;
-  mimeType?: unknown;
-  name?: unknown;
-  response?: unknown;
-  inputTokens?: unknown;
-  outputTokens?: unknown;
-};
 
 type FeedbackTarget = {
   chatTitle?: string;
@@ -274,89 +175,6 @@ type InstallPromptEvent = Event & {
   prompt: () => Promise<void>;
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
-
-function messageParts(message: SavedMessage): ContentPart[] {
-  return [
-    ...(message.content as ContentPart[]),
-    ...(message.attachments?.flatMap((attachment) => attachment.content as ContentPart[]) ?? []),
-  ];
-}
-
-function messageText(message: SavedMessage): string {
-  return messageParts(message)
-    .filter((part) => part.type === "text")
-    .map((part) => String(part.text ?? ""))
-    .join("\n")
-    .trim();
-}
-
-function messageUsage(message: SavedMessage) {
-  const usage = messageParts(message).find((part) => part.type === "data" && part.name === "token_usage") ?? messageParts(message).find((part) => part.type === "usage");
-  if (!usage) return null;
-  const data = usage.data && typeof usage.data === "object" ? usage.data as { inputTokens?: unknown; outputTokens?: unknown } : usage;
-  const input = typeof data.inputTokens === "number" && Number.isFinite(data.inputTokens) ? Math.max(0, Math.floor(data.inputTokens)) : null;
-  const output = typeof data.outputTokens === "number" && Number.isFinite(data.outputTokens) ? Math.max(0, Math.floor(data.outputTokens)) : null;
-  return input === null && output === null ? null : { input, output };
-}
-
-function estimatedTokens(value: string) {
-  const ascii = (value.match(/[\x00-\x7f]/g) ?? []).length;
-  const nonAscii = value.length - ascii;
-  return Math.max(1, Math.ceil(ascii / 4 + nonAscii / 1.7));
-}
-
-function visibleMessagesAfterClear(messages: SavedMessage[]) {
-  const boundary = messages.map((message) => message.content.some((part) => (part as ContentPart).type === "clear-boundary")).lastIndexOf(true);
-  return boundary < 0 ? messages : messages.slice(boundary + 1);
-}
-
-function compactContext(messages: SavedMessage[], systemPrompt: string) {
-  const transcript = visibleMessagesAfterClear(messages).map((message) => {
-    const text = messageText(message);
-    if (!text) return "";
-    const speaker = message.role === "assistant" ? "Assistant" : message.role === "user" ? "User" : "System";
-    return `${speaker}: ${text}`;
-  }).filter(Boolean).join("\n\n");
-  return `[Compacted conversation context]\nUse this complete local transcript as context for the rest of this chat. Do not mention this instruction unless asked.\n${systemPrompt.trim() ? `\nOriginal system prompt:\n${systemPrompt.trim()}\n` : ""}\nTranscript:\n${transcript || "(No prior messages.)"}`;
-}
-
-function chatSearchText(chat: Chat): string {
-  return chat.messages.map(messageText).filter(Boolean).join("\n");
-}
-
-function searchExcerpt(chat: Chat, query: string): string {
-  const text = chatSearchText(chat).replace(/\s+/g, " ").trim();
-  if (!text) return "";
-  const index = query ? text.toLocaleLowerCase().indexOf(query.toLocaleLowerCase()) : 0;
-  const start = Math.max(0, index - 44);
-  const end = Math.min(text.length, Math.max(index + query.length + 110, 150));
-  return `${start ? "…" : ""}${text.slice(start, end)}${end < text.length ? "…" : ""}`;
-}
-
-type FunctionCallRequest = { name: string; args: unknown; callId?: string };
-
-function functionCallFromText(text: string): FunctionCallRequest | null {
-  const match = /\*\*Function call requested:\*\* `([^`]+)`(?:\n<!--ai-chat-tool-call:([^>]+)-->)?\n\n```json\n([\s\S]*?)\n```/.exec(text);
-  if (!match) return null;
-  try {
-    return { name: match[1], callId: match[2] ? decodeURIComponent(match[2]) : undefined, args: JSON.parse(match[3]) };
-  } catch {
-    return null;
-  }
-}
-
-function savedAttachmentFromDraft(draft: DraftAttachment, data: string): SavedAttachment {
-  const isImage = draft.file.type.startsWith("image/");
-  return {
-    id: draft.id,
-    name: draft.file.name,
-    type: isImage ? "image" : "file",
-    contentType: draft.file.type || "application/octet-stream",
-    content: [isImage
-      ? { type: "image", image: data, filename: draft.file.name }
-      : { type: "file", data, filename: draft.file.name, mimeType: draft.file.type || "application/octet-stream" }],
-  };
-}
 
 function MessageMarkdown({ content, streaming }: { content: string; streaming: boolean }) {
   return <Suspense fallback={<div className="markdown markdown-fallback">{content}</div>}><StreamingMarkdown content={content} streaming={streaming} /></Suspense>;
@@ -460,14 +278,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
     recognition.current?.stop();
     attachmentsRef.current.forEach((attachment) => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl));
   }, []);
-  useEffect(() => {
-    if (!modelOpen) return;
-    const closeWhenOutside = (event: PointerEvent) => { if (!modelMenuRef.current?.contains(event.target as Node)) setModelOpen(false); };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setModelOpen(false); };
-    document.addEventListener("pointerdown", closeWhenOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => { document.removeEventListener("pointerdown", closeWhenOutside); document.removeEventListener("keydown", closeOnEscape); };
-  }, [modelOpen]);
+  useDismissOnOutside(modelOpen, modelMenuRef, () => setModelOpen(false));
 
   const addFiles = useCallback((files: File[]) => {
     let usedBytes = attachments.reduce((total, attachment) => total + attachment.file.size, 0);
@@ -633,7 +444,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
       if (command === "/compact") { compactConversation(); return; }
       if (command === "/prompt") { onOpenPromptSettings(); return; }
     }
-    const savedAttachments = await Promise.all(attachments.map(async (attachment) => savedAttachmentFromDraft(attachment, await toDataUrl(attachment.file))));
+    const savedAttachments = await Promise.all(attachments.map((attachment) => savedAttachmentFromDraft(attachment)));
     const user: SavedMessage = { id: newId("user"), role: "user", content: text ? [{ type: "text", text }] : [], attachments: savedAttachments, createdAt: new Date().toISOString() };
     await run([...chat.messages, user]);
   }, [chat.messages, clearConversation, compactConversation, onOpenPromptSettings, run]);
@@ -701,14 +512,7 @@ function ModelMenu({ settings, onChange }: { settings: AppSettings; onChange: (n
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const provider = settings.providers[settings.activeProvider] ?? orderedProviders(settings)[0]?.[1];
-  useEffect(() => {
-    if (!open) return;
-    const closeWhenOutside = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) setOpen(false); };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
-    document.addEventListener("pointerdown", closeWhenOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => { document.removeEventListener("pointerdown", closeWhenOutside); document.removeEventListener("keydown", closeOnEscape); };
-  }, [open]);
+  useDismissOnOutside(open, menuRef, () => setOpen(false));
   return <div className="model-menu-wrap" ref={menuRef}>
     <button type="button" className="top-model" title={provider?.model ?? ""} onClick={() => setOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{providerEmoji(provider)}</span><span className="model-name">{provider?.model ?? "Select a model"}</span><ChevronDown size={16} /></button>
     {open && <div className="model-menu top-model-menu"><ModelMenuOptions settings={settings} onChange={onChange} onClose={() => setOpen(false)} /></div>}
@@ -728,33 +532,8 @@ function ThinkingMenu({ settings, onChange }: { settings: AppSettings; onChange:
   }[level] ?? (locale === "zh" ? `思考：${level}` : `Thinking: ${level}`));
   const choices: ThinkingLevel[] = ["off", "low", "medium", "high", "custom"];
   const customPreset = choices.includes(settings.thinkingLevel) ? "" : settings.thinkingLevel;
-  useEffect(() => {
-    if (!open) return;
-    const closeWhenOutside = (event: PointerEvent) => { if (!menuRef.current?.contains(event.target as Node)) setOpen(false); };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
-    document.addEventListener("pointerdown", closeWhenOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => { document.removeEventListener("pointerdown", closeWhenOutside); document.removeEventListener("keydown", closeOnEscape); };
-  }, [open]);
+  useDismissOnOutside(open, menuRef, () => setOpen(false));
   return <div className="thinking-menu-wrap" ref={menuRef}><button type="button" className={`thinking-button ${settings.thinkingLevel !== "off" ? "active" : ""}`} title={locale === "zh" ? "调整思考等级" : "Adjust thinking level"} onClick={() => setOpen((current) => !current)}><Sparkles size={16} /><span>{labelFor(settings.thinkingLevel)}</span><ChevronDown size={15} /></button>{open && <div className="thinking-menu"><strong>{locale === "zh" ? "思考等级" : "Thinking level"}</strong>{choices.map((level) => <button key={level} type="button" className={settings.thinkingLevel === level ? "active" : ""} onClick={() => { onChange({ ...settings, thinkingLevel: level }); setOpen(false); }}>{labelFor(level)}</button>)}<label>{locale === "zh" ? "提供商预设值" : "Provider preset"}<input list="thinking-preset-values" value={customPreset} placeholder="e.g. xhigh" onChange={(event) => onChange({ ...settings, thinkingLevel: event.target.value.trim() || "off" })} /><datalist id="thinking-preset-values"><option value="minimal" /><option value="xhigh" /></datalist></label>{settings.thinkingLevel === "custom" && <label>{locale === "zh" ? "Token 预算" : "Token budget"}<input type="number" min="0" step="128" value={settings.thinkingBudget} onFocus={(event) => event.currentTarget.select()} onChange={(event) => onChange({ ...settings, thinkingBudget: Number(event.target.value) || 0 })} /></label>}<small>{locale === "zh" ? "原生预设会原样传给兼容提供商，并在下一条请求生效" : "Provider presets are passed through to compatible APIs on the next request"}</small></div>}</div>;
-}
-
-function PromptDialog({ target, scope, settings, onChange, onSavePrompt, onClose }: { target: Pick<Chat, "id" | "title" | "systemPrompt">; scope: "chat" | "notebook"; settings: AppSettings; onChange: (next: AppSettings) => void; onSavePrompt: (prompt: string) => void; onClose: () => void }) {
-  const locale = useContext(LocaleContext);
-  const [prompt, setPrompt] = useState(target.systemPrompt ?? "");
-  const [presetTitle, setPresetTitle] = useState("");
-  const [presetContent, setPresetContent] = useState("");
-  const targetName = scope === "notebook" ? (locale === "zh" ? "Notebook" : "Notebook") : (locale === "zh" ? "对话" : "conversation");
-  const addPreset = () => {
-    const title = presetTitle.trim();
-    const content = presetContent.trim();
-    if (!title || !content) return;
-    const preset: PromptPreset = { id: newId("prompt"), title: title.slice(0, 80), content };
-    onChange({ ...settings, promptPresets: [preset, ...settings.promptPresets] });
-    setPresetTitle("");
-    setPresetContent("");
-  };
-  return <div className="modal-backdrop" onMouseDown={onClose}><section className="prompt-dialog" role="dialog" aria-modal="true" aria-label={locale === "zh" ? "系统提示词与预设" : "System prompt and presets"} onMouseDown={(event) => event.stopPropagation()}><header><div><TextQuote size={20} /><h2>{locale === "zh" ? "Prompts" : "Prompts"}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label={locale === "zh" ? "关闭" : "Close"}><X /></button></header><div className="prompt-dialog-body"><section><h3>{locale === "zh" ? `${targetName} system prompt` : `${targetName} system prompt`}</h3><p>{target.systemPrompt === undefined ? (locale === "zh" ? "留空时会继承 Notebook 或全局默认 system prompt。" : "Leave blank to inherit the Notebook or global default system prompt.") : (locale === "zh" ? "这是当前对象的独立覆盖值。" : "This is a local override for the current item.")}</p><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={locale === "zh" ? "输入此对话或 Notebook 的 system prompt…" : "Write a system prompt for this conversation or Notebook…"} rows={7} /><div className="prompt-dialog-actions"><button type="button" onClick={onClose}>{locale === "zh" ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={() => { onSavePrompt(prompt.trim()); onClose(); }}>{locale === "zh" ? "保存" : "Save"}</button></div></section><section className="prompt-presets"><div><h3>{locale === "zh" ? "预设提示词" : "Prompt presets"}</h3><p>{locale === "zh" ? "选择后会填入上方 system prompt，可再修改后保存。" : "Choose one to fill the system prompt above, then edit or save it."}</p></div>{settings.promptPresets.length ? <div className="prompt-preset-list">{settings.promptPresets.map((preset) => <article key={preset.id}><div><strong>{preset.title}</strong><small>{preset.content}</small></div><button type="button" onClick={() => setPrompt(preset.content)}>{locale === "zh" ? "使用" : "Use"}</button><button type="button" className="icon-button" title={locale === "zh" ? "删除预设" : "Delete preset"} onClick={() => onChange({ ...settings, promptPresets: settings.promptPresets.filter((item) => item.id !== preset.id) })}><Trash2 size={15} /></button></article>)}</div> : <p className="prompt-empty">{locale === "zh" ? "还没有预设。可在下面保存常用提示词。" : "No presets yet. Save a frequently used prompt below."}</p>}<div className="new-preset"><input value={presetTitle} maxLength={80} placeholder={locale === "zh" ? "预设名称" : "Preset name"} onChange={(event) => setPresetTitle(event.target.value)} /><textarea value={presetContent} placeholder={locale === "zh" ? "预设内容" : "Preset content"} rows={4} onChange={(event) => setPresetContent(event.target.value)} /><button type="button" onClick={addPreset}><Plus size={15} />{locale === "zh" ? "保存为预设" : "Save preset"}</button></div></section></div></section></div>;
 }
 
 type PromptScope = "global" | "chat" | "notebook";
@@ -814,11 +593,11 @@ function ProviderJsonDialog({ mode, providers, onImport, onClose }: { mode: "imp
   const updateSource = (value: string) => {
     setSource(value);
     if (!value.trim()) { setPreview([]); setError(""); return; }
-    try { setPreview(readProviderJson(value)); setError(""); }
+    try { setPreview(parseProviderJson(value)); setError(""); }
     catch (cause) { setPreview([]); setError(cause instanceof Error ? cause.message : "JSON 无法读取。"); }
   };
   const selected = providers.filter(([id]) => selectedIds.has(id));
-  const exportJson = JSON.stringify({ version: 1, providers: selected.map(([, provider]) => provider) }, null, 2);
+  const exportJson = serializeProviderJson(selected.map(([, provider]) => provider));
   const toggleSelected = (id: ProviderId) => setSelectedIds((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id);
@@ -842,6 +621,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
   const [emojiPickerProviderId, setEmojiPickerProviderId] = useState<ProviderId | null>(null);
   const [providerJsonMode, setProviderJsonMode] = useState<"import" | "export" | null>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
+  useDismissOnOutside(Boolean(emojiPickerProviderId), emojiPickerRef, () => setEmojiPickerProviderId(null));
   const isEditingProvider = (id: ProviderId) => editingProviderIds.has(id);
   const setProviderEditing = (id: ProviderId, editing: boolean) => setEditingProviderIds((current) => {
     const next = new Set(current);
@@ -849,14 +629,6 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     else next.delete(id);
     return next;
   });
-  useEffect(() => {
-    if (!emojiPickerProviderId) return;
-    const closeWhenOutside = (event: PointerEvent) => { if (!emojiPickerRef.current?.contains(event.target as Node)) setEmojiPickerProviderId(null); };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setEmojiPickerProviderId(null); };
-    document.addEventListener("pointerdown", closeWhenOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => { document.removeEventListener("pointerdown", closeWhenOutside); document.removeEventListener("keydown", closeOnEscape); };
-  }, [emojiPickerProviderId]);
   const updateProvider = (id: ProviderId, field: "name" | "kind" | "apiKey" | "baseUrl" | "model", value: string) => {
     if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
@@ -931,7 +703,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
             const editing = isEditingProvider(id);
             return <fieldset key={id} className={editing ? "is-editing" : ""}>
               <legend>{provider.name}</legend>
-              <div className="provider-title-actions"><div className="provider-order-actions"><span>{settings.language === "zh" ? "排序" : "Order"}</span><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button></div><div className="provider-row-actions"><button type="button" className={copied === `provider-json-${id}` ? "is-copied" : ""} onClick={() => void copyText(JSON.stringify({ version: 1, providers: [provider] }, null, 2), `provider-json-${id}`)} aria-label={copied === `provider-json-${id}` ? copiedLabel : (settings.language === "zh" ? "复制此渠道商 JSON" : "Copy this provider JSON")} title={copied === `provider-json-${id}` ? copiedLabel : (settings.language === "zh" ? "复制此渠道商 JSON" : "Copy this provider JSON")}>{copied === `provider-json-${id}` ? <Check size={15} /> : <Copy size={15} />}</button><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div></div>
+              <div className="provider-title-actions"><div className="provider-order-actions"><span>{settings.language === "zh" ? "排序" : "Order"}</span><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button></div><div className="provider-row-actions"><button type="button" className={copied === `provider-json-${id}` ? "is-copied" : ""} onClick={() => void copyText(serializeProviderJson([provider]), `provider-json-${id}`)} aria-label={copied === `provider-json-${id}` ? copiedLabel : (settings.language === "zh" ? "复制此渠道商 JSON" : "Copy this provider JSON")} title={copied === `provider-json-${id}` ? copiedLabel : (settings.language === "zh" ? "复制此渠道商 JSON" : "Copy this provider JSON")}>{copied === `provider-json-${id}` ? <Check size={15} /> : <Copy size={15} />}</button><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div></div>
               <div className="provider-emoji-control" ref={emojiPickerProviderId === id ? emojiPickerRef : undefined}><span>Emoji</span><input disabled={!editing} aria-label={settings.language === "zh" ? `${provider.name} 的 Emoji` : `Emoji for ${provider.name}`} value={providerEmoji(provider)} maxLength={16} onChange={(event) => updateProviderEmoji(id, event.target.value)} onBlur={(event) => { if (!event.currentTarget.value.trim()) updateProviderEmoji(id, "🤖"); }} /><button type="button" disabled={!editing} onClick={() => setEmojiPickerProviderId((current) => current === id ? null : id)}>{settings.language === "zh" ? "常用 Emoji" : "Pick emoji"}</button>{emojiPickerProviderId === id && <div className="provider-emoji-picker" role="dialog" aria-label={settings.language === "zh" ? "选择渠道商 Emoji" : "Choose provider emoji"}>{COMMON_PROVIDER_EMOJIS.map((emoji) => <button type="button" key={emoji} className={providerEmoji(provider) === emoji ? "active" : ""} title={emoji} onClick={() => { updateProviderEmoji(id, emoji); setEmojiPickerProviderId(null); }}>{emoji}</button>)}</div>}</div>
               <div className="provider-presets"><span>{settings.language === "zh" ? "端点预设" : "Endpoint preset"}</span><button type="button" className="provider-edit-toggle" onClick={() => setProviderEditing(id, !editing)}><Pencil size={13} />{editing ? (settings.language === "zh" ? "完成编辑" : "Done editing") : (settings.language === "zh" ? "编辑配置" : "Edit provider")}</button>{(Object.keys(PROVIDER_PRESETS) as ProviderPresetId[]).map((presetId) => <button type="button" disabled={!editing} key={presetId} className={provider.baseUrl === PROVIDER_PRESETS[presetId].baseUrl ? "active" : ""} onClick={() => applyProviderPreset(id, presetId)}>{PROVIDER_PRESETS[presetId].label}</button>)}</div>
               {!editing && <p className="provider-saved-endpoint">{settings.language === "zh" ? "已保存端点" : "Saved endpoint"}<code>{provider.baseUrl || "—"}</code></p>}
@@ -1501,19 +1273,7 @@ export default function Home() {
     const timer = window.setInterval(() => setSyncNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, [syncReady]);
-  useEffect(() => {
-    if (!syncMenuOpen) return;
-    const closeWhenOutside = (event: PointerEvent) => {
-      if (!syncMenuRef.current?.contains(event.target as Node)) setSyncMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setSyncMenuOpen(false); };
-    document.addEventListener("pointerdown", closeWhenOutside);
-    document.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("pointerdown", closeWhenOutside);
-      document.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [syncMenuOpen]);
+  useDismissOnOutside(syncMenuOpen, syncMenuRef, () => setSyncMenuOpen(false));
 
   const createChat = useCallback((notebookId?: string) => {
     const now = new Date().toISOString();
@@ -1759,9 +1519,9 @@ export default function Home() {
       await replaceData(backup.data);
       if (backup.settings) {
         const imported = backup.keysIncluded === false
-          ? { ...backup.settings, providers: Object.fromEntries((Object.keys(defaultSettings.providers) as ProviderId[]).map((id) => [id, { ...backup.settings!.providers[id], apiKey: settings.providers[id].apiKey }])) as AppSettings["providers"] }
-          : backup.settings;
-        setSettings(normalizeSettings(imported));
+          ? settingsWithoutImportedKeys(backup.settings, settings)
+          : normalizeSettings(backup.settings);
+        setSettings(imported);
       }
       setActiveChatId(backup.data.chats[0]?.id ?? null);
       setActiveNotebookId(backup.data.notebooks[0]?.id ?? null);

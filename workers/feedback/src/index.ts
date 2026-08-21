@@ -18,6 +18,8 @@ type FeedbackPayload = {
 const feedbackMailbox = "shantayreynar@gmail.com";
 const maxRequestBytes = 32 * 1024;
 
+class RequestBodyTooLargeError extends Error {}
+
 function headers(origin: string) {
   return {
     "Access-Control-Allow-Origin": origin,
@@ -48,6 +50,31 @@ function field(label: string, value: string) {
   return `<p><strong>${escapeHtml(label)}:</strong><br>${escapeHtml(value || "Not provided").replace(/\n/g, "<br>")}</p>`;
 }
 
+/** Enforces the limit even when a client omits or lies about Content-Length. */
+async function parseFeedbackPayload(request: Request): Promise<FeedbackPayload> {
+  if (!request.body) throw new SyntaxError("Request body is required.");
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxRequestBytes) {
+      await reader.cancel();
+      throw new RequestBodyTooLargeError();
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes)) as FeedbackPayload;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const allowedOrigin = env.ALLOWED_ORIGIN || "https://chat.utilgadgets.com";
@@ -62,8 +89,9 @@ export default {
 
     let payload: FeedbackPayload;
     try {
-      payload = await request.json() as FeedbackPayload;
-    } catch {
+      payload = await parseFeedbackPayload(request);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) return json({ error: "Feedback is too large." }, 413, origin);
       return json({ error: "Invalid JSON." }, 400, origin);
     }
 

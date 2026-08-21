@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Refactored shared page utilities into focused content, provider JSON, and dismiss-on-outside modules. Plain text and DOCX attachments are now extracted locally before requests while retaining the original file. Provider JSON import/export, key-free backup imports, and message persistence have safer shared paths. The feedback Worker now enforces its payload limit while streaming. Updated the production stack to Next.js 16 and removed unused browser-test dependencies.
+
 ## 0.2.7
 
 WebDAV now records a server ID in `meta.json`, remembers the last server locally, and asks before initializing an empty server, joining unrelated data, changing servers, or resolving same-ID conflicts. The review view compares local, server, and shared records and supports read-only preview plus merge choices. Sync setup now starts with a first-time or join-existing branch; a passphrase is set only during that initial setup and later changes require rebuilding sync. Existing setups can run a read-only validity check. Assistant feedback rows show Input and Output token counts. The composer now offers `/clear` with undo before the next message, and `/compact`, which creates a local compacted context and static acknowledgement without a model request.

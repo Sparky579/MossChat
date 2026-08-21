@@ -159,6 +159,18 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   };
 }
 
+/** Restores preferences from a key-free backup without silently dropping custom providers. */
+export function settingsWithoutImportedKeys(imported: Partial<AppSettings>, local: AppSettings): AppSettings {
+  const normalized = normalizeSettings(imported);
+  return {
+    ...normalized,
+    providers: Object.fromEntries(Object.entries(normalized.providers).map(([id, provider]) => [
+      id,
+      { ...provider, apiKey: local.providers[id]?.apiKey ?? "" },
+    ])),
+  };
+}
+
 function toStoredMessage(chatId: string, message: SavedMessage, seq: number): StoredMessage {
   const { attachments: _attachments, ...body } = message;
   return { ...body, key: `${chatId}:${message.id}`, chatId, seq };
@@ -218,6 +230,7 @@ export async function saveChatDelta(chat: Chat, dirtyMessageIds: readonly string
   await db.transaction("rw", db.chats, db.messages, db.attachments, async () => {
     await db.chats.put(meta);
     const existing = await db.messages.where("chatId").equals(chat.id).toArray();
+    const existingById = new Map(existing.map((message) => [message.id, message]));
     const currentIds = new Set(messages.map((message) => message.id));
     const removed = existing.filter((message) => !currentIds.has(message.id));
     if (removed.length) {
@@ -225,7 +238,7 @@ export async function saveChatDelta(chat: Chat, dirtyMessageIds: readonly string
       for (const message of removed) await db.attachments.where("[chatId+messageId]").equals([chat.id, message.id]).delete();
     }
     for (const [seq, message] of messages.entries()) {
-      const existingMessage = existing.find((item) => item.id === message.id);
+      const existingMessage = existingById.get(message.id);
       if (!existingMessage || dirty.has(message.id)) {
         await db.messages.put(toStoredMessage(chat.id, message, seq));
         await db.attachments.where("[chatId+messageId]").equals([chat.id, message.id]).delete();
