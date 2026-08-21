@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronLeft,
+  ChevronRight,
   Cloud,
   Copy,
   Download,
@@ -42,7 +43,7 @@ import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useL
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, SYNC_CONFIGURATION_CHANGED_ERROR, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
-import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
+import type { AppData, AppSettings, Chat, Notebook, NotebookPromptMode, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
 
@@ -103,6 +104,14 @@ const orderedProviders = (settings: AppSettings) => settings.providerOrder
 
 const providerEmoji = (provider: AppSettings["providers"][string] | undefined) => provider?.emoji?.trim() || "🤖";
 const COMMON_PROVIDER_EMOJIS = ["🤖", "🧠", "✨", "🔮", "⚡", "🚀", "🦙", "🐱", "🐳", "🦉", "🧩", "🌿"];
+
+const combinedNotebookPrompt = (chat: Chat | null, notebook: Notebook | undefined, globalPrompt: string) => {
+  if (chat?.systemPrompt !== undefined) return chat.systemPrompt;
+  const notebookPrompt = notebook?.systemPrompt?.trim() ?? "";
+  if (!notebookPrompt) return globalPrompt;
+  if ((notebook?.promptMode ?? "replace") === "replace") return notebookPrompt;
+  return [globalPrompt.trim(), notebookPrompt].filter(Boolean).join("\n\n");
+};
 
 const PROVIDER_PRESETS = {
   google: { label: "Gemini", name: "Google Gemini", kind: "google" as ProviderKind, baseUrl: "https://generativelanguage.googleapis.com" },
@@ -369,7 +378,7 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onClear, onFunc
   </article>;
 }
 
-function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange, onCommand }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[]) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void; onCommand: (command: "clear" | "compact") => void }) {
+function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange, onCommand: handleCommand }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[]) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void; onCommand: (command: "clear" | "compact" | "prompt") => void }) {
   const copy = useCopy();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -384,6 +393,10 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   const attachmentsRef = useRef<DraftAttachment[]>([]);
   const activeProvider = settings.providers[settings.activeProvider] ?? orderedProviders(settings)[0]?.[1];
   const commandOpen = text.trimStart().startsWith("/");
+  const onCommand = (command: "clear" | "compact" | "prompt") => {
+    if (command === "prompt") { setText("/prompt"); return; }
+    handleCommand(command);
+  };
 
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
   useLayoutEffect(() => {
@@ -462,7 +475,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   };
 
   return <div className={`gemini-composer ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); addFiles(Array.from(event.dataTransfer.files)); }}>
-    {commandOpen && <div className="composer-command-menu" role="listbox"><button type="button" onClick={() => { setText(""); onCommand("clear"); }}><strong>/clear</strong><span>{settings.language === "zh" ? "保留消息显示，但不再将上方内容发送给模型" : "Keep messages visible, but stop sending earlier context to the model."}</span></button><button type="button" onClick={() => { setText(""); onCommand("compact"); }}><strong>/compact</strong><span>{settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model."}</span></button></div>}
+    {commandOpen && <div className="composer-command-menu" role="listbox"><button type="button" onClick={() => { setText(""); onCommand("clear"); }}><strong>/clear</strong><span>{settings.language === "zh" ? "保留消息显示，但不再将上方内容发送给模型" : "Keep messages visible, but stop sending earlier context to the model."}</span></button><button type="button" onClick={() => { setText(""); onCommand("compact"); }}><strong>/compact</strong><span>{settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model."}</span></button><button type="button" onClick={() => { setText(""); onCommand("prompt"); }}><strong>/prompt</strong><span>{settings.language === "zh" ? "打开当前对话、Notebook 或全局 Prompt 设置" : "Open prompt settings for this chat, its Notebook, or the global default."}</span></button></div>}
     {attachments.length > 0 && <div className="composer-attachments">{attachments.map((attachment) => <span className="composer-attachment" key={attachment.id}><span className="attachment-icon">{attachment.file.type.startsWith("image/") ? <ImagePlus size={18} /> : <FileText size={18} />}</span><span className="attachment-name">{attachment.file.name}</span><button className="icon-button attachment-remove" type="button" aria-label="Remove attachment" onClick={() => removeAttachment(attachment.id)}><X size={14} /></button></span>)}</div>}
     <div className="composer-line">
       <input ref={fileInput} hidden type="file" multiple accept="image/*,application/pdf,.txt,.md,.csv,.doc,.docx" onChange={(event) => { addFiles(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
@@ -484,7 +497,7 @@ function StarterPrompts({ onSend }: { onSend: (prompt: string) => void }) {
   return <div className="starter-prompts">{prompts.map((prompt) => <button key={prompt} type="button" onClick={() => onSend(prompt)}>{prompt}<SendHorizontal size={15} /></button>)}</div>;
 }
 
-function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSettingsChange, onFeedback }: { chat: Chat; settings: AppSettings; systemPrompt: string; onSnapshot: (id: string, messages: SavedMessage[], dirtyMessageIds?: string[]) => void; onFork: (index: number) => void; onSettingsChange: (next: AppSettings) => void; onFeedback: (target: FeedbackTarget) => void }) {
+function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSettingsChange, onFeedback, onOpenPromptSettings }: { chat: Chat; settings: AppSettings; systemPrompt: string; onSnapshot: (id: string, messages: SavedMessage[], dirtyMessageIds?: string[]) => void; onFork: (index: number) => void; onSettingsChange: (next: AppSettings) => void; onFeedback: (target: FeedbackTarget) => void; onOpenPromptSettings: () => void }) {
   const copy = useCopy();
   const [isRunning, setIsRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -570,11 +583,12 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
       const command = text.trim().toLocaleLowerCase();
       if (command === "/clear") { clearConversation(); return; }
       if (command === "/compact") { compactConversation(); return; }
+      if (command === "/prompt") { onOpenPromptSettings(); return; }
     }
     const savedAttachments = await Promise.all(attachments.map(async (attachment) => savedAttachmentFromDraft(attachment, await toDataUrl(attachment.file))));
     const user: SavedMessage = { id: newId("user"), role: "user", content: text ? [{ type: "text", text }] : [], attachments: savedAttachments, createdAt: new Date().toISOString() };
     await run([...chat.messages, user]);
-  }, [chat.messages, clearConversation, compactConversation, run]);
+  }, [chat.messages, clearConversation, compactConversation, onOpenPromptSettings, run]);
 
   useEffect(() => {
     const pending = chat.messages.at(-1);
@@ -693,6 +707,52 @@ function PromptDialog({ target, scope, settings, onChange, onSavePrompt, onClose
     setPresetContent("");
   };
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="prompt-dialog" role="dialog" aria-modal="true" aria-label={locale === "zh" ? "系统提示词与预设" : "System prompt and presets"} onMouseDown={(event) => event.stopPropagation()}><header><div><TextQuote size={20} /><h2>{locale === "zh" ? "Prompts" : "Prompts"}</h2></div><button type="button" className="icon-button" onClick={onClose} aria-label={locale === "zh" ? "关闭" : "Close"}><X /></button></header><div className="prompt-dialog-body"><section><h3>{locale === "zh" ? `${targetName} system prompt` : `${targetName} system prompt`}</h3><p>{target.systemPrompt === undefined ? (locale === "zh" ? "留空时会继承 Notebook 或全局默认 system prompt。" : "Leave blank to inherit the Notebook or global default system prompt.") : (locale === "zh" ? "这是当前对象的独立覆盖值。" : "This is a local override for the current item.")}</p><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={locale === "zh" ? "输入此对话或 Notebook 的 system prompt…" : "Write a system prompt for this conversation or Notebook…"} rows={7} /><div className="prompt-dialog-actions"><button type="button" onClick={onClose}>{locale === "zh" ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={() => { onSavePrompt(prompt.trim()); onClose(); }}>{locale === "zh" ? "保存" : "Save"}</button></div></section><section className="prompt-presets"><div><h3>{locale === "zh" ? "预设提示词" : "Prompt presets"}</h3><p>{locale === "zh" ? "选择后会填入上方 system prompt，可再修改后保存。" : "Choose one to fill the system prompt above, then edit or save it."}</p></div>{settings.promptPresets.length ? <div className="prompt-preset-list">{settings.promptPresets.map((preset) => <article key={preset.id}><div><strong>{preset.title}</strong><small>{preset.content}</small></div><button type="button" onClick={() => setPrompt(preset.content)}>{locale === "zh" ? "使用" : "Use"}</button><button type="button" className="icon-button" title={locale === "zh" ? "删除预设" : "Delete preset"} onClick={() => onChange({ ...settings, promptPresets: settings.promptPresets.filter((item) => item.id !== preset.id) })}><Trash2 size={15} /></button></article>)}</div> : <p className="prompt-empty">{locale === "zh" ? "还没有预设。可在下面保存常用提示词。" : "No presets yet. Save a frequently used prompt below."}</p>}<div className="new-preset"><input value={presetTitle} maxLength={80} placeholder={locale === "zh" ? "预设名称" : "Preset name"} onChange={(event) => setPresetTitle(event.target.value)} /><textarea value={presetContent} placeholder={locale === "zh" ? "预设内容" : "Preset content"} rows={4} onChange={(event) => setPresetContent(event.target.value)} /><button type="button" onClick={addPreset}><Plus size={15} />{locale === "zh" ? "保存为预设" : "Save preset"}</button></div></section></div></section></div>;
+}
+
+type PromptScope = "global" | "chat" | "notebook";
+
+function PromptSettingsDialog({ chat, notebook, initialScope, settings, onChange, onSaveChat, onSaveNotebook, onSaveGlobal, onClose }: { chat: Chat | null; notebook: Notebook | null; initialScope: PromptScope; settings: AppSettings; onChange: (next: AppSettings) => void; onSaveChat: (prompt: string) => void; onSaveNotebook: (prompt: string, mode: NotebookPromptMode) => void; onSaveGlobal: (prompt: string) => void; onClose: () => void }) {
+  const locale = useContext(LocaleContext);
+  const [scope, setScope] = useState<PromptScope>(initialScope);
+  const [prompt, setPrompt] = useState("");
+  const [notebookMode, setNotebookMode] = useState<NotebookPromptMode>(notebook?.promptMode ?? "replace");
+  const [presetTitle, setPresetTitle] = useState("");
+  const [presetContent, setPresetContent] = useState("");
+  const scopes = [
+    chat ? { value: "chat" as const, label: locale === "zh" ? "当前对话" : "Current chat" } : null,
+    { value: "global" as const, label: locale === "zh" ? "全局默认" : "Global default" },
+    notebook ? { value: "notebook" as const, label: locale === "zh" ? "当前 Notebook" : "Current Notebook" } : null,
+  ].filter((item): item is { value: PromptScope; label: string } => Boolean(item));
+  const promptFor = (nextScope: PromptScope) => nextScope === "chat" ? chat?.systemPrompt ?? "" : nextScope === "notebook" ? notebook?.systemPrompt ?? "" : settings.systemPrompt;
+  useEffect(() => {
+    if (!scopes.some((item) => item.value === scope)) setScope("global");
+  }, [scope, scopes]);
+  useEffect(() => {
+    setPrompt(promptFor(scope));
+    if (scope === "notebook") setNotebookMode(notebook?.promptMode ?? "replace");
+  }, [scope, chat?.id, chat?.systemPrompt, notebook?.id, notebook?.systemPrompt, notebook?.promptMode, settings.systemPrompt]);
+  const addPreset = () => {
+    const title = presetTitle.trim();
+    const content = presetContent.trim();
+    if (!title || !content) return;
+    const preset: PromptPreset = { id: newId("prompt"), title: title.slice(0, 80), content };
+    onChange({ ...settings, promptPresets: [preset, ...settings.promptPresets] });
+    setPresetTitle("");
+    setPresetContent("");
+  };
+  const description = scope === "chat"
+    ? (locale === "zh" ? "当前对话 Prompt 优先级最高，会覆盖 Notebook 与全局 Prompt。" : "This chat prompt has the highest priority and overrides Notebook and global prompts.")
+    : scope === "notebook"
+      ? (locale === "zh" ? "设置后会应用到此 Notebook 内未单独设置 Prompt 的对话。" : "This applies to chats in this Notebook that do not have their own prompt.")
+      : (locale === "zh" ? "这是所有未使用对话或 Notebook Prompt 的默认系统提示词。" : "This is the default system prompt when a chat or Notebook does not provide one.");
+  const save = () => {
+    const next = prompt.trim();
+    if (scope === "chat") onSaveChat(next);
+    else if (scope === "notebook") onSaveNotebook(next, notebookMode);
+    else onSaveGlobal(next);
+    onClose();
+  };
+  return <div className="modal-backdrop" onMouseDown={onClose}><section className="prompt-dialog" role="dialog" aria-modal="true" aria-label={locale === "zh" ? "Prompt 设置" : "Prompt settings"} onMouseDown={(event) => event.stopPropagation()}><header><div><TextQuote size={20} /><h2>{locale === "zh" ? "Prompts" : "Prompts"}</h2></div><div className="prompt-header-actions"><select value={scope} aria-label={locale === "zh" ? "编辑目标" : "Editing target"} onChange={(event) => setScope(event.target.value as PromptScope)}>{scopes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><button type="button" className="icon-button" onClick={onClose} aria-label={locale === "zh" ? "关闭" : "Close"}><X /></button></div></header><div className="prompt-dialog-body"><section><h3>{scope === "global" ? (locale === "zh" ? "全局 System Prompt" : "Global system prompt") : scope === "chat" ? (locale === "zh" ? "当前对话 System Prompt" : "Current chat system prompt") : (locale === "zh" ? "当前 Notebook Prompt" : "Current Notebook prompt")}</h3><p>{description}</p>{scope === "notebook" && <label className="prompt-mode-control"><span>{locale === "zh" ? "应用方式" : "Application mode"}</span><select value={notebookMode} onChange={(event) => setNotebookMode(event.target.value as NotebookPromptMode)}><option value="stack">{locale === "zh" ? "堆叠：全局 Prompt + Notebook Prompt" : "Stack: global + Notebook prompt"}</option><option value="replace">{locale === "zh" ? "覆盖：只使用 Notebook Prompt" : "Replace: Notebook prompt only"}</option></select></label>}<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={locale === "zh" ? "输入系统提示词…" : "Write a system prompt…"} rows={7} /><div className="prompt-dialog-actions"><button type="button" onClick={onClose}>{locale === "zh" ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={save}>{locale === "zh" ? "保存" : "Save"}</button></div></section><section className="prompt-presets"><div><h3>{locale === "zh" ? "预设提示词" : "Prompt presets"}</h3><p>{locale === "zh" ? "选择后会填入当前编辑目标，可再修改后保存。" : "Choose one to fill the current target, then edit or save it."}</p></div>{settings.promptPresets.length ? <div className="prompt-preset-list">{settings.promptPresets.map((preset) => <article key={preset.id}><div><strong>{preset.title}</strong><small>{preset.content}</small></div><button type="button" onClick={() => setPrompt(preset.content)}>{locale === "zh" ? "使用" : "Use"}</button><button type="button" className="icon-button" title={locale === "zh" ? "删除预设" : "Delete preset"} onClick={() => onChange({ ...settings, promptPresets: settings.promptPresets.filter((item) => item !== preset) })}><Trash2 size={15} /></button></article>)}</div> : <p className="prompt-empty">{locale === "zh" ? "还没有预设。可在下面保存常用提示词。" : "No presets yet. Save a frequently used prompt below."}</p>}<div className="new-preset"><input value={presetTitle} maxLength={80} placeholder={locale === "zh" ? "预设名称" : "Preset name"} onChange={(event) => setPresetTitle(event.target.value)} /><textarea value={presetContent} placeholder={locale === "zh" ? "预设内容" : "Preset content"} rows={4} onChange={(event) => setPresetContent(event.target.value)} /><button type="button" onClick={addPreset}><Plus size={15} />{locale === "zh" ? "保存为预设" : "Save preset"}</button></div></section></div></section></div>;
 }
 
 function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersistent, onChooseAutoBackup }: { settings: AppSettings; safety: StorageSafetyStatus | null; onChange: (settings: AppSettings) => void; onClose: () => void; onRequestPersistent: () => void; onChooseAutoBackup: () => void }) {
@@ -1141,6 +1201,7 @@ export default function Home() {
   const [notebookCreateOpen, setNotebookCreateOpen] = useState(false);
   const [notebookTitleDraft, setNotebookTitleDraft] = useState("");
   const [notebookCreateChatId, setNotebookCreateChatId] = useState<string | null>(null);
+  const [notebooksCollapsed, setNotebooksCollapsed] = useState(false);
   const [expandedNotebookId, setExpandedNotebookId] = useState<string | null>(null);
   const [renamingNotebookId, setRenamingNotebookId] = useState<string | null>(null);
   const [notebookRenameDraft, setNotebookRenameDraft] = useState("");
@@ -1153,7 +1214,8 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [feedbackTarget, setFeedbackTarget] = useState<FeedbackTarget | null | undefined>(undefined);
-  const [promptTarget, setPromptTarget] = useState<{ scope: "chat" | "notebook"; id: string } | null>(null);
+  const [promptDialogOpen, setPromptDialogOpen] = useState(false);
+  const [promptDialogScope, setPromptDialogScope] = useState<PromptScope>("global");
   const [exportOpen, setExportOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [syncMenuOpen, setSyncMenuOpen] = useState(false);
@@ -1226,8 +1288,9 @@ export default function Home() {
 
   const activeChat = data.chats.find((chat) => chat.id === activeChatId) ?? null;
   const activeNotebook = data.notebooks.find((notebook) => notebook.id === activeNotebookId) ?? null;
-  const activeSystemPrompt = activeChat?.systemPrompt ?? (activeChat?.notebookId ? data.notebooks.find((notebook) => notebook.id === activeChat.notebookId)?.systemPrompt : undefined) ?? settings.systemPrompt;
-  const promptTargetItem = promptTarget?.scope === "chat" ? data.chats.find((chat) => chat.id === promptTarget.id) : promptTarget?.scope === "notebook" ? data.notebooks.find((notebook) => notebook.id === promptTarget.id) : null;
+  const promptNotebook = activeChat?.notebookId ? data.notebooks.find((notebook) => notebook.id === activeChat.notebookId) ?? null : notebookViewOpen ? activeNotebook : null;
+  const activeSystemPrompt = combinedNotebookPrompt(activeChat, promptNotebook ?? undefined, settings.systemPrompt);
+  const openPromptSettings = (scope: PromptScope) => { setPromptDialogScope(scope); setPromptDialogOpen(true); };
   const syncReady = isSyncConfigured(syncConfig);
   const hasStreamingMessage = data.chats.some((chat) => chat.messages.some((message) => Boolean(message.status?.running)));
   const syncSignature = useMemo(() => JSON.stringify({
@@ -1377,7 +1440,7 @@ export default function Home() {
 
   const createNotebook = (title = "", open = true) => {
     const now = new Date().toISOString();
-    const notebook: Notebook = { id: newId("notebook"), title: title.trim().slice(0, 120) || "Untitled notebook", content: "", attachments: [], createdAt: now, updatedAt: now };
+    const notebook: Notebook = { id: newId("notebook"), title: title.trim().slice(0, 120) || "Untitled notebook", content: "", attachments: [], promptMode: "stack", createdAt: now, updatedAt: now };
     setData((current) => ({ ...current, notebooks: [notebook, ...current.notebooks] }));
     setActiveNotebookId(notebook.id);
     if (open) {
@@ -1555,10 +1618,10 @@ export default function Home() {
     void saveChatMetadata(nextChat);
   };
 
-  const saveNotebookSystemPrompt = (notebookId: string, systemPrompt: string) => {
+  const saveNotebookSystemPrompt = (notebookId: string, systemPrompt: string, promptMode: NotebookPromptMode) => {
     const target = data.notebooks.find((notebook) => notebook.id === notebookId);
     if (!target) return;
-    const nextNotebook = { ...target, systemPrompt: systemPrompt || undefined, updatedAt: new Date().toISOString() };
+    const nextNotebook = { ...target, systemPrompt: systemPrompt || undefined, promptMode, updatedAt: new Date().toISOString() };
     setData((current) => ({ ...current, notebooks: current.notebooks.map((notebook) => notebook.id === notebookId ? nextNotebook : notebook) }));
     void saveNotebook(nextNotebook);
   };
@@ -1638,8 +1701,9 @@ export default function Home() {
       <div className="brand-row"><button type="button" className="brand" onClick={() => setSidebarOpen(false)}><MossMark className="app-mark brand-mark" /><span>MossChat</span></button><button className="icon-button collapse-button" onClick={() => setSidebarOpen(false)} aria-label="Collapse sidebar"><PanelLeftClose size={19} /></button></div>
       <button className="new-chat" type="button" onClick={() => createChat()}><Pencil size={17} />{copy.newChat}<span>Ctrl + Shift + O</span></button>
       <div className="side-nav"><button onClick={() => setSearchOpen(true)}><Search size={17} />{copy.searchChats}</button></div>
-      <div className="side-section notebook-section">
-        <div className="section-label"><span>{copy.notebooks}</span><button className="icon-button" type="button" aria-label={copy.newNotebook} title={copy.newNotebook} onClick={() => beginCreateNotebook()}><Plus size={16} /></button></div>
+      <div className={`side-section notebook-section ${notebooksCollapsed ? "is-collapsed" : ""}`}>
+        <div className="section-label"><span>{copy.notebooks}</span><button className="icon-button notebook-collapse-button" type="button" aria-label={notebooksCollapsed ? (settings.language === "zh" ? "展开 Notebook" : "Expand Notebooks") : (settings.language === "zh" ? "收起 Notebook" : "Collapse Notebooks")} title={notebooksCollapsed ? (settings.language === "zh" ? "展开" : "Expand") : (settings.language === "zh" ? "收起" : "Collapse")} aria-expanded={!notebooksCollapsed} onClick={() => setNotebooksCollapsed((value) => !value)}>{notebooksCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}</button><button className="icon-button notebook-add-button" type="button" aria-label={copy.newNotebook} title={copy.newNotebook} onClick={() => { setNotebooksCollapsed(false); beginCreateNotebook(); }}><Plus size={16} /></button></div>
+        <div className="notebook-section-content">
         {notebookCreateOpen && <form className="new-notebook-form" onSubmit={(event) => { event.preventDefault(); saveNewNotebook(); }}><input autoFocus value={notebookTitleDraft} maxLength={120} aria-label={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} placeholder={settings.language === "zh" ? "Notebook 名称" : "Notebook name"} onChange={(event) => setNotebookTitleDraft(event.target.value)} /><button type="submit" className="icon-button" aria-label={settings.language === "zh" ? "创建" : "Create"}><Check size={16} /></button><button type="button" className="icon-button" aria-label={settings.language === "zh" ? "取消" : "Cancel"} onClick={() => { setNotebookCreateOpen(false); setNotebookCreateChatId(null); }}><X size={16} /></button>{notebookCreateChatId && <small>{settings.language === "zh" ? "创建后会将当前对话加入其中" : "The current chat will be added"}</small>}</form>}
         {data.notebooks.map((notebook) => {
           const count = data.chats.filter((chat) => chat.notebookId === notebook.id).length;
@@ -1648,6 +1712,7 @@ export default function Home() {
             {expandedNotebookId === notebook.id && <div className="chat-actions-panel"><button type="button" onClick={() => beginRenameNotebook(notebook.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" className="danger" onClick={() => removeNotebook(notebook.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}
           </div>;
         })}
+        </div>
       </div>
       <div className="side-section recent-section"><div className="section-label"><span>{copy.recent}</span></div>{visibleChats.slice(0, 11).map((chat) => <div className={`side-item chat-item ${activeChatId === chat.id && !notebookViewOpen ? "active" : ""}`} key={chat.id}><div className="chat-row">{renamingChatId === chat.id ? <input className="chat-title-editor" autoFocus value={chatTitleDraft} aria-label={settings.language === "zh" ? "会话标题" : "Chat title"} onChange={(event) => setChatTitleDraft(event.target.value)} onBlur={() => saveRenamedChat(chat.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveRenamedChat(chat.id); } if (event.key === "Escape") setRenamingChatId(null); }} /> : <button className="chat-select" type="button" title={chat.title} onClick={() => selectChat(chat.id)}><span className="chat-title">{chat.title}</span>{chat.pinned && <Pin size={13} fill="currentColor" />}</button>}<button className="chat-more" type="button" aria-label={settings.language === "zh" ? "会话操作" : "Chat actions"} title={settings.language === "zh" ? "会话操作" : "Chat actions"} onClick={() => { setExpandedChatId((id) => id === chat.id ? null : chat.id); setAddingNotebookForChatId(null); }}><MoreHorizontal size={16} /></button></div>{expandedChatId === chat.id && <div className="chat-actions-panel"><button type="button" onClick={() => toggleChatPin(chat.id)}><Pin size={14} fill={chat.pinned ? "currentColor" : "none"} />{chat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin") : (settings.language === "zh" ? "置顶" : "Pin")}</button><button type="button" onClick={() => beginRenameChat(chat.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" onClick={() => setAddingNotebookForChatId((id) => id === chat.id ? null : chat.id)}><BookOpen size={14} />{settings.language === "zh" ? "添加到 Notebook" : "Add to notebook"}</button>{addingNotebookForChatId === chat.id && <div className="action-notebook-list">{data.notebooks.map((notebook) => <button type="button" key={notebook.id} onClick={() => addChatToNotebook(chat.id, notebook.id)}>{notebook.title}</button>)}<button type="button" onClick={() => createNotebookForChat(chat.id)}><Plus size={14} />{settings.language === "zh" ? "新建 Notebook" : "New notebook"}</button></div>}<button type="button" className="danger" onClick={() => removeChat(chat.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}</div>)}</div>
       <div className="profile-row"><div className="profile-avatar">A</div><div><strong>{copy.localWorkspace}</strong><small>{copy.browserOnly}</small></div><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label={copy.settings}><Settings size={18} /></button></div>
@@ -1656,7 +1721,7 @@ export default function Home() {
       <header className="topbar">
         <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><Menu /></button>
         <div className="top-model-controls"><ModelMenu settings={settings} onChange={setSettings} /><ThinkingMenu settings={settings} onChange={setSettings} /></div>
-        {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action" onClick={() => setPromptTarget(activeChat ? { scope: "chat", id: activeChat.id } : { scope: "notebook", id: activeNotebook!.id })}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
+        {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action" onClick={() => openPromptSettings(activeChat ? "chat" : "notebook")}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
         {!installed && <button className="top-icon pwa-install-button" type="button" title={settings.language === "zh" ? "添加 MossChat 到桌面" : "Add MossChat to desktop"} onClick={() => void installApp()}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
         <div className="top-actions">
           {activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
@@ -1665,11 +1730,11 @@ export default function Home() {
           <button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
         </div>
       </header>
-      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
+      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
     </section>
     {searchOpen && <div className="modal-backdrop" onMouseDown={() => setSearchOpen(false)}><section className="search-dialog" onMouseDown={(event) => event.stopPropagation()}><Search size={19} /><input autoFocus placeholder={copy.search} value={query} onChange={(event) => setQuery(event.target.value)} /><button className="icon-button" onClick={() => setSearchOpen(false)}><X /></button><div className="search-results"><p>{settings.language === "zh" ? "结果" : "Results"}</p>{searchResults.map((chat) => <button key={chat.id} onClick={() => { selectChat(chat.id); setSearchOpen(false); }}><span><strong>{chat.title}</strong><small>{searchExcerpt(chat, query)}</small></span><time>{shortDate(chat.updatedAt, settings.language)}</time></button>)}{query.trim() && !searchResults.length && <p className="search-empty">{settings.language === "zh" ? "没有匹配的对话内容。" : "No matching chat content."}</p>}</div></section></div>}
     {settingsOpen && <SettingsDialog settings={settings} safety={storageSafety} onChange={setSettings} onClose={() => setSettingsOpen(false)} onRequestPersistent={enablePersistentStorage} onChooseAutoBackup={configureAutomaticBackup} />}
-    {promptTarget && promptTargetItem && <PromptDialog key={`${promptTarget.scope}:${promptTarget.id}`} target={promptTargetItem} scope={promptTarget.scope} settings={settings} onChange={setSettings} onSavePrompt={(prompt) => { if (promptTarget.scope === "chat") saveChatSystemPrompt(promptTarget.id, prompt); else saveNotebookSystemPrompt(promptTarget.id, prompt); }} onClose={() => setPromptTarget(null)} />}
+    {promptDialogOpen && <PromptSettingsDialog key={`${promptDialogScope}:${activeChat?.id ?? "none"}:${promptNotebook?.id ?? "none"}`} chat={activeChat} notebook={promptNotebook} initialScope={promptDialogScope} settings={settings} onChange={setSettings} onSaveChat={(prompt) => { if (activeChat) saveChatSystemPrompt(activeChat.id, prompt); }} onSaveNotebook={(prompt, mode) => { if (promptNotebook) saveNotebookSystemPrompt(promptNotebook.id, prompt, mode); }} onSaveGlobal={(prompt) => setSettings({ ...settings, systemPrompt: prompt })} onClose={() => setPromptDialogOpen(false)} />}
     {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
     {installGuideOpen && <InstallDialog onClose={() => setInstallGuideOpen(false)} />}
     {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onOverwrite={overwriteRemoteSync} onClear={clearSyncConfig} onClose={() => setSyncConfigOpen(false)} />}

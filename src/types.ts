@@ -80,6 +80,8 @@ export type NotebookAttachment = {
   text?: string;
 };
 
+export type NotebookPromptMode = "stack" | "replace";
+
 export type Notebook = {
   id: string;
   title: string;
@@ -87,6 +89,8 @@ export type Notebook = {
   attachments: NotebookAttachment[];
   /** Undefined means chats in this Notebook use the global default. */
   systemPrompt?: string;
+  /** Existing notebooks without this field retain the legacy replacement behavior. */
+  promptMode?: NotebookPromptMode;
   createdAt: string;
   updatedAt: string;
 };
