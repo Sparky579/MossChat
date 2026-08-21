@@ -85,6 +85,16 @@ Large attachments count against the browser storage quota. Browsers can remove s
 
 Provider requests are made from the browser. A custom endpoint must allow browser CORS requests. Some providers also restrict which reasoning preset values their models accept.
 
+### CORS for self-hosted providers
+
+MossChat calls provider endpoints directly from the browser; it does not proxy API requests through the MossChat server. When exposing a local gateway or OpenAI-compatible service to the web, configure its CORS allowlist for the MossChat origin (for example `https://mosschat.xyz`) and ensure `OPTIONS` preflight requests return `204` or `200` with at least:
+
+- `Access-Control-Allow-Origin: https://mosschat.xyz` (or your own MossChat deployment origin)
+- `Access-Control-Allow-Methods` including `POST` and `OPTIONS`
+- `Access-Control-Allow-Headers` explicitly including `Authorization` and `Content-Type`
+
+Do not rely only on `Access-Control-Allow-Headers: *`: browsers treat `Authorization` as a non-wildcard request header, so the preflight can still fail. Keep the allowlist limited to the sites that should be able to use the gateway.
+
 Custom function calling returns a model requested function payload to the conversation. MossChat does not execute arbitrary code or access local system tools.
 
 ## FAQ
