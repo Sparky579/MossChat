@@ -9,6 +9,7 @@ const META_FILE = "meta.json";
 const ITERATIONS = 600_000;
 const MAX_SYNC_IMAGE_EDGE = 2048;
 const DAILY_AUTO_MERGE_MIN_OVERLAP = 0.85;
+export const SYNC_CONFIGURATION_CHANGED_ERROR = "The sync server configuration has changed.";
 
 export type SyncConfig = {
   endpoint: string;
@@ -357,12 +358,12 @@ async function listEntries(config: SyncConfig) {
 async function listFiles(config: SyncConfig) { return (await listEntries(config)).filter((file) => file.endsWith(".bin")); }
 
 async function readRecords(config: SyncConfig, key: CryptoKey, files: string[]) {
-  const values = await Promise.all(files.map(async (file) => {
+  return Promise.all(files.map(async (file) => {
     const response = await request(config, file);
-    if (!response.ok) return null;
-    try { return normalizedRecord(await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope)); } catch { return null; }
+    if (!response.ok) throw new Error(`Could not read a sync record (${response.status}).`);
+    try { return normalizedRecord(await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope)); }
+    catch { throw new Error("The encryption passphrase does not match this server."); }
   }));
-  return values.filter((value): value is SyncRecord => Boolean(value));
 }
 
 function resolveRecords(local: SyncRecord[], remote: SyncRecord[], resolution: SyncResolution = "merge") {
@@ -467,10 +468,12 @@ export async function inspectWebDavSync({ config, data, settings }: { config: Sy
   const entries = await listEntries(config);
   const initialMeta = entries.includes(META_FILE) ? await readMeta(config) : null;
   if (!initialMeta) {
+    if (previousServerId) throw new Error(SYNC_CONFIGURATION_CHANGED_ERROR);
     const files = entries.filter((file) => file.endsWith(".bin"));
     if (files.length) return { state: "missing-meta", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, differences: [], needsDecision: true };
     return { state: "empty", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, differences: [], needsDecision: true };
   }
+  if (previousServerId && initialMeta.serverId !== previousServerId) throw new Error(SYNC_CONFIGURATION_CHANGED_ERROR);
   const meta = initialMeta.serverId ? initialMeta : await ensureMeta(config);
   const key = await encryptionKey(config.passphrase, base64ToBytes(meta.salt));
   const remoteRecords = await readRecords(config, key, entries.filter((file) => file.endsWith(".bin")));

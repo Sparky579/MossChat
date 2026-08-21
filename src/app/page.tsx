@@ -41,7 +41,7 @@ import {
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
-import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
+import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, SYNC_CONFIGURATION_CHANGED_ERROR, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
@@ -128,6 +128,11 @@ const shortDate = (time: string, locale: Locale) =>
   new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", { month: "short", day: "numeric" }).format(new Date(time));
 
 const formatBytes = (value?: number) => value === undefined ? "—" : value < 1024 * 1024 ? `${Math.round(value / 1024)} KB` : `${(value / (1024 * 1024)).toFixed(1)} MB`;
+
+const syncConnectionChanged = (error: unknown) => {
+  const message = error instanceof Error ? error.message : "";
+  return message === SYNC_CONFIGURATION_CHANGED_ERROR || message === "WebDAV username or password is incorrect." || message === "The encryption passphrase does not match this server.";
+};
 
 const generatePassphrase = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), (value) => value.toString(36).padStart(2, "0")).join("").slice(0, 48);
 
@@ -1149,6 +1154,7 @@ export default function Home() {
   const [syncMessage, setSyncMessage] = useState("");
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [syncReview, setSyncReview] = useState<SyncInspection | null>(null);
+  const [syncReconfigureNotice, setSyncReconfigureNotice] = useState(false);
   const [syncNow, setSyncNow] = useState(() => Date.now());
   const [installGuideOpen, setInstallGuideOpen] = useState(false);
   const [installed, setInstalled] = useState(false);
@@ -1235,6 +1241,17 @@ export default function Home() {
     setSyncMessage(settings.language === "zh" ? "已清除同步连接。本地数据未删除。" : "Sync connection cleared. Local data was not deleted.");
     autoSyncSignature.current = "";
   };
+  const disconnectChangedSync = () => {
+    clearWebDavSync(syncConfig);
+    setSyncConfig(emptySyncConfig());
+    setLastSyncAt(null);
+    setSyncStatus("idle");
+    setSyncMessage(settings.language === "zh" ? "当前服务器配置已更改，请重新配置。" : "The current server configuration changed. Please configure sync again.");
+    setSyncReview(null);
+    setSyncConfigOpen(false);
+    setSyncReconfigureNotice(true);
+    autoSyncSignature.current = "";
+  };
   const overwriteRemoteSync = async (next: SyncConfig) => {
     const localData = dataRef.current;
     const localSettings = settingsRef.current;
@@ -1290,6 +1307,10 @@ export default function Home() {
       setSyncMessage(`${settings.language === "zh" ? "已同步" : "Synced"}: ${result.uploaded} ${settings.language === "zh" ? "条上传" : "uploaded"}, ${result.downloaded} ${settings.language === "zh" ? "条远程记录" : "remote records"}${result.compressedImages ? `, ${result.compressedImages} ${settings.language === "zh" ? "张图片已压缩" : "images compressed"}` : ""}.`);
       return true;
     } catch (error) {
+      if (syncConnectionChanged(error)) {
+        disconnectChangedSync();
+        return false;
+      }
       setSyncStatus("error");
       setSyncMessage(error instanceof Error ? error.message : "Sync failed.");
       return false;
@@ -1645,6 +1666,7 @@ export default function Home() {
     {installGuideOpen && <InstallDialog onClose={() => setInstallGuideOpen(false)} />}
     {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onOverwrite={overwriteRemoteSync} onClear={clearSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
     {syncReview && <SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={(resolution) => { setSyncReview(null); void runSync(resolution); }} />}
+    {syncReconfigureNotice && <div className="modal-backdrop" onMouseDown={() => setSyncReconfigureNotice(false)}><section className="sync-review-dialog" role="alertdialog" aria-modal="true" aria-label={settings.language === "zh" ? "同步服务器已更改" : "Sync server changed"} onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{settings.language === "zh" ? "同步需要重新配置" : "Sync needs to be reconfigured"}</h2></div><button className="icon-button" type="button" onClick={() => setSyncReconfigureNotice(false)}><X /></button></header><div className="sync-review-body"><p className="sync-review-warning">{settings.language === "zh" ? "当前服务器配置已更改，请重新配置。" : "The current server configuration has changed. Please configure sync again."}</p><p>{settings.language === "zh" ? "本机数据没有被删除；重新配置后可选择加入已有同步，或新建同步并确认是否覆盖远程数据。" : "Local data was not deleted. Reconfigure to join an existing sync or create a new sync and confirm any remote overwrite."}</p></div><footer><button type="button" className="sync-review-cancel" onClick={() => setSyncReconfigureNotice(false)}>{settings.language === "zh" ? "稍后" : "Later"}</button><button type="button" className="text-button" onClick={() => { setSyncReconfigureNotice(false); setSyncConfigOpen(true); }}>{settings.language === "zh" ? "重新配置" : "Reconfigure"}</button></footer></section></div>}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;
 }
