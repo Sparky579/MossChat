@@ -1077,6 +1077,7 @@ export default function Home() {
   const [exportOpen, setExportOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [syncMenuOpen, setSyncMenuOpen] = useState(false);
+  const [mobileTopActionsOpen, setMobileTopActionsOpen] = useState(false);
   const [syncConfigOpen, setSyncConfigOpen] = useState(false);
   const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "error" | "done">("idle");
   const [syncMessage, setSyncMessage] = useState("");
@@ -1092,6 +1093,7 @@ export default function Home() {
   const dataRef = useRef(data);
   const syncRunning = useRef(false);
   const syncMenuRef = useRef<HTMLDivElement>(null);
+  const mobileTopActionsRef = useRef<HTMLDivElement>(null);
   const namingAttempts = useRef(new Set<string>());
   const autoSyncSignature = useRef("");
   const deferredInstallPrompt = useRef<InstallPromptEvent | null>(null);
@@ -1287,6 +1289,7 @@ export default function Home() {
     return () => window.clearInterval(timer);
   }, [syncReady]);
   useDismissOnOutside(syncMenuOpen, syncMenuRef, () => setSyncMenuOpen(false));
+  useDismissOnOutside(mobileTopActionsOpen, mobileTopActionsRef, () => setMobileTopActionsOpen(false));
 
   const createChat = useCallback((notebookId?: string) => {
     const now = new Date().toISOString();
@@ -1580,13 +1583,28 @@ export default function Home() {
       <header className="topbar">
         <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><Menu /></button>
         <div className="top-model-controls"><ModelMenu settings={settings} onChange={setSettings} /><ThinkingMenu settings={settings} onChange={setSettings} /></div>
-        {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action" onClick={() => openPromptSettings(activeChat ? "chat" : "notebook")}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
-        {!installed && <button className="top-icon pwa-install-button" type="button" title={settings.language === "zh" ? "添加 MossChat 到桌面" : "Add MossChat to desktop"} onClick={() => void installApp()}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
+        {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action desktop-top-utility" onClick={() => openPromptSettings(activeChat ? "chat" : "notebook")}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
+        {!installed && <button className="top-icon pwa-install-button desktop-top-utility" type="button" title={settings.language === "zh" ? "添加 MossChat 到桌面" : "Add MossChat to desktop"} onClick={() => void installApp()}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
         <div className="top-actions">
-          {activeChat && <button className="top-icon" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
+          {activeChat && <button className="top-icon desktop-top-utility" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
           <div className="sync-wrap" ref={syncMenuRef}><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncReady && <span className="sync-age" aria-live="polite">{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncStatusText}</span>}{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncReady ? "is-ready" : "is-inactive"} ${syncStatus === "error" ? "error" : ""} ${syncStatus === "syncing" ? "is-syncing" : ""}`}><i />{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
-          <div className="export-wrap"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div>
-          <button className="top-icon" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
+          <div className="export-wrap desktop-top-utility"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div>
+          <button className="top-icon desktop-top-utility" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
+          <div className="mobile-top-more" ref={mobileTopActionsRef}>
+            <button className="top-icon" type="button" aria-label={settings.language === "zh" ? "更多操作" : "More actions"} title={settings.language === "zh" ? "更多操作" : "More actions"} aria-expanded={mobileTopActionsOpen} onClick={() => setMobileTopActionsOpen((value) => !value)}><MoreHorizontal size={19} /></button>
+            {mobileTopActionsOpen && <div className="mobile-top-menu">
+              {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" onClick={() => { openPromptSettings(activeChat ? "chat" : "notebook"); setMobileTopActionsOpen(false); }}><TextQuote size={17} />Prompts</button>}
+              {!installed && <button type="button" onClick={() => { void installApp(); setMobileTopActionsOpen(false); }}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
+              {activeChat && <button type="button" onClick={() => { toggleActivePin(); setMobileTopActionsOpen(false); }}><Pin size={17} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}</button>}
+              <hr />
+              <button type="button" onClick={() => { exportCurrent("markdown"); setMobileTopActionsOpen(false); }}><FileText size={17} />{copy.exportMd}</button>
+              <button type="button" onClick={() => { exportCurrent("word"); setMobileTopActionsOpen(false); }}><Archive size={17} />{copy.exportWord}</button>
+              <button type="button" onClick={() => { setBackupOpen(true); setMobileTopActionsOpen(false); }}><Upload size={17} />{copy.backup}</button>
+              <label className="mobile-top-import"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; setMobileTopActionsOpen(false); }} /><Archive size={17} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label>
+              <hr />
+              <button type="button" onClick={() => { setFeedbackTarget(null); setMobileTopActionsOpen(false); }}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
+            </div>}
+          </div>
         </div>
       </header>
       {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
