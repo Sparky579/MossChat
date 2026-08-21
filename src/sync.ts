@@ -157,7 +157,10 @@ function normalizedEndpoint(endpoint: string) {
 
 function authorization(config: SyncConfig) { return `Basic ${bytesToBase64(encoder.encode(`${config.username}:${config.password}`))}`; }
 async function request(config: SyncConfig, path: string, init: RequestInit = {}) {
-  return fetch(`${normalizedEndpoint(config.endpoint)}${path}`, { ...init, headers: { Authorization: authorization(config), ...(init.headers ?? {}) }, credentials: "omit" });
+  // WebDAV record names can themselves contain percent escapes (for example a
+  // tombstone for a message ID with `:`). Encode the filename as one path
+  // segment so a literal `%3A` remains `%3A` on disk rather than becoming `:`.
+  return fetch(`${normalizedEndpoint(config.endpoint)}${encodeURIComponent(path)}`, { ...init, headers: { Authorization: authorization(config), ...(init.headers ?? {}) }, credentials: "omit" });
 }
 
 function newServerId() { return `srv_${randomUuid().replace(/-/g, "")}`; }
