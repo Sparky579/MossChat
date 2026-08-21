@@ -31,7 +31,7 @@ There is no MossChat account service, API proxy, or server side key store.
 
 | Area | What it does |
 | --- | --- |
-| Providers | Google Gemini, Anthropic, OpenRouter, OpenAI, and OpenAI compatible endpoints with a custom base URL |
+| Providers | Google Gemini, Anthropic, OpenRouter, OpenAI, OpenAI-compatible endpoints, and safe declarative adapters for custom gateways |
 | Messages | Streaming responses, stop, regenerate, edit, branch, pin, full text search, and conversation system prompts |
 | Rendering | Markdown, syntax highlighted code, tables, and KaTeX math with streaming friendly layout |
 | Thinking | Collapsible reasoning output with provider preset or token budget controls |
@@ -96,6 +96,52 @@ MossChat calls provider endpoints directly from the browser; it does not proxy A
 Do not rely only on `Access-Control-Allow-Headers: *`: browsers treat `Authorization` as a non-wildcard request header, so the preflight can still fail. Keep the allowlist limited to the sites that should be able to use the gateway.
 
 Custom function calling returns a model requested function payload to the conversation. MossChat does not execute arbitrary code or access local system tools.
+
+### Advanced request adapters
+
+Most custom gateways differ only in their request path, authentication, thinking fields, or stream shape. MossChat can adapt those differences with **data-only JSON**, without adding a server proxy or executing code from an imported configuration.
+
+Open **Settings → API & models**. Each model’s **Model capabilities & thinking** panel controls the normal things in the UI: the default and available thinking levels, plus Streaming, Reasoning, Images, PDF, and Tools support. The **Advanced request adapter** button is for the uncommon wire-format details. A provider-level adapter is the default for all of its models; a model adapter overrides it; without either, MossChat continues using its built-in OpenAI, Claude, or Gemini implementation.
+
+The included presets cover current OpenAI Chat Completions, Anthropic Messages, Gemini GenerateContent, Ollama `/api/chat`, Azure OpenAI deployments, and legacy text completions. The adapter test panel accepts a copied real SSE, NDJSON, JSON-array, or JSON response and shows how many text, reasoning, usage, error, and unrecognized records the mapping produced. Use **Copy generation prompt** if you want an AI coding tool to help make an adapter: it deliberately asks for both official API docs and a real stream sample.
+
+Here is the small shape used by an adapter:
+
+```json
+{
+  "schema": 1,
+  "extends": "openai-compatible",
+  "endpoint": {
+    "chat": "/openai/deployments/{model}/chat/completions",
+    "query": { "api-version": "2024-02-01" }
+  },
+  "auth": { "type": "header", "name": "api-key" },
+  "request": {
+    "messageFormat": "openai",
+    "body": {
+      "model": "{{model}}",
+      "stream": true,
+      "messages": "{{messages.openai}}",
+      "reasoning_effort": "{{thinking.effort}}"
+    }
+  },
+  "stream": {
+    "format": "sse",
+    "doneWhen": "[DONE]",
+    "events": {
+      "text": [{ "extract": "$.choices[0].delta.content" }],
+      "reasoning": [{ "extract": "$.choices[0].delta.reasoning_content" }],
+      "usage": [{ "extract": "$.usage" }]
+    }
+  },
+  "capabilities": ["streaming", "reasoning", "vision", "tools"],
+  "thinking": { "allowed": ["off", "minimal", "low", "medium", "high"] }
+}
+```
+
+`extends` avoids repeating a whole common protocol. Endpoints must be relative to the provider’s Base URL, so imported JSON cannot redirect a request and its key to another site. Authentication is injected by MossChat from the provider key; adapter templates never receive that key. Supported stream formats are `sse`, `ndjson` (including Ollama’s `done: true`), `json-array`, and `text`. Non-streaming responses use the separate `response` mapping. The JSON-path subset is intentionally small and predictable: `$`, `.property`, `[0]`, and `[*]`.
+
+Do not add executable JavaScript to an adapter. MossChat intentionally does not offer JS hooks or run imported code: a shared adapter must not be able to read `localStorage` or API keys. An adapter can still see the messages and responses for the provider you configured, so only import it from a source you trust. The vendor formats behind the presets are documented by [OpenAI](https://platform.openai.com/docs/api-reference/responses-streaming), [Claude](https://platform.claude.com/docs/en/build-with-claude/streaming), [Gemini](https://ai.google.dev/api/generate-content), and [Ollama](https://docs.ollama.com/api/chat).
 
 ## FAQ
 

@@ -1,5 +1,6 @@
 import type { ChatModelAdapter, ThreadMessage } from "@assistant-ui/react";
-import type { AppSettings } from "./types";
+import { adapterWhenMatches, configuredAdapter, mapAdapterEvent, materializeAdapter, readAdapterPath } from "./adapter-config";
+import type { AdapterConfig, AppSettings } from "./types";
 
 type ContentPart = {
   type: string;
@@ -187,6 +188,90 @@ async function* parseSseEvents(response: Response): AsyncGenerator<Record<string
   }
 }
 
+async function* parseNdjsonEvents(response: Response): AsyncGenerator<Record<string, unknown>> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { yield JSON.parse(line) as Record<string, unknown>; } catch { /* A malformed NDJSON line is reported by the adapter test bench instead. */ }
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) {
+    try { yield JSON.parse(buffer) as Record<string, unknown>; } catch { /* ignore trailing non-JSON bytes */ }
+  }
+}
+
+const OMIT_TEMPLATE_VALUE = Symbol("omit-template-value");
+
+type TemplateContext = Record<string, unknown>;
+
+const templateValue = (source: string, context: TemplateContext): unknown => {
+  const exact = /^\{\{([^{}]+)\}\}$/.exec(source.trim());
+  if (exact) return context[exact[1].trim()] ?? OMIT_TEMPLATE_VALUE;
+  return source.replace(/\{\{([^{}]+)\}\}/g, (_match, key: string) => {
+    const value = context[key.trim()];
+    return value === undefined || value === null ? "" : typeof value === "string" ? value : JSON.stringify(value);
+  });
+};
+
+function renderAdapterTemplate(value: unknown, context: TemplateContext): unknown {
+  if (typeof value === "string") return templateValue(value, context);
+  if (Array.isArray(value)) return value.flatMap((item) => {
+    const rendered = renderAdapterTemplate(item, context);
+    return rendered === OMIT_TEMPLATE_VALUE ? [] : [rendered];
+  });
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).flatMap(([key, item]) => {
+    const rendered = renderAdapterTemplate(item, context);
+    return rendered === OMIT_TEMPLATE_VALUE ? [] : [[key, rendered]];
+  }));
+}
+
+function promptFromMessages(messages: readonly ThreadMessage[], system: string, template: NonNullable<AdapterConfig["request"]>["promptTemplate"]): string {
+  const apply = (pattern: string | undefined, content: string) => (pattern ?? "{content}").replaceAll("{content}", content);
+  return [
+    ...(system ? [apply(template?.system, system)] : []),
+    ...messages.filter((message) => message.role !== "system").map((message) => apply(message.role === "assistant" ? template?.assistant : template?.user, textFor(message))),
+    template?.suffix ?? "",
+  ].join("");
+}
+
+const renderedHeaderValue = (value: string, context: TemplateContext) => {
+  const rendered = templateValue(value, context);
+  return rendered === OMIT_TEMPLATE_VALUE ? "" : typeof rendered === "string" ? rendered : JSON.stringify(rendered);
+};
+
+function adapterEndpoint(baseUrl: string, config: AdapterConfig, model: string, apiKey: string): string {
+  const route = (config.endpoint?.chat ?? "/chat/completions")
+    .replaceAll("{model}", encodeURIComponent(model))
+    .replaceAll("{deployment}", encodeURIComponent(model));
+  const endpoint = `${trimSlash(baseUrl)}/${route.replace(/^\/+/, "")}`;
+  const url = new URL(endpoint);
+  for (const [key, value] of Object.entries(config.endpoint?.query ?? {})) url.searchParams.set(key, value.replaceAll("{{model}}", model));
+  if (config.auth?.type === "query" && apiKey) url.searchParams.set(config.auth.name || "key", `${config.auth.prefix ?? ""}${apiKey}`);
+  return url.toString();
+}
+
+function adapterHeaders(config: AdapterConfig, apiKey: string, context: TemplateContext): HeadersInit {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  for (const [name, value] of Object.entries(config.extraHeaders ?? {})) {
+    const rendered = renderedHeaderValue(value, context);
+    if (rendered) headers[name] = rendered;
+  }
+  if (!apiKey || config.auth?.type === "none" || config.auth?.type === "query") return headers;
+  if (config.auth?.type === "header") headers[config.auth.name || "Authorization"] = `${config.auth.prefix ?? ""}${apiKey}`;
+  else headers[config.auth?.name || "Authorization"] = `${config.auth?.prefix ?? "Bearer "}${apiKey}`;
+  return headers;
+}
+
 function openAiMessages(messages: readonly ThreadMessage[]) {
   return messages
     .filter((message) => message.role !== "system")
@@ -316,6 +401,21 @@ function formatFunctionCall(call: NativeFunctionCall): string {
   return `\n\n**Function call requested:** \`${call.name}\`${marker}\n\n\`\`\`json\n${JSON.stringify(call.args ?? {}, null, 2)}\n\`\`\``;
 }
 
+function adapterToolCall(value: unknown): NativeFunctionCall | null {
+  if (!value || typeof value !== "object") return null;
+  const item = value as Record<string, unknown>;
+  const functionData = item.function && typeof item.function === "object" ? item.function as Record<string, unknown> : item;
+  const name = typeof functionData.name === "string" ? functionData.name : "";
+  if (!name) return null;
+  const rawArgs = functionData.arguments ?? functionData.args ?? functionData.input ?? {};
+  let args: unknown = rawArgs;
+  if (typeof rawArgs === "string") {
+    try { args = JSON.parse(rawArgs); } catch { return null; }
+  }
+  const callId = typeof item.id === "string" ? item.id : typeof item.call_id === "string" ? item.call_id : undefined;
+  return { name, args, callId };
+}
+
 function functionDeclarations(settings: AppSettings): NativeFunctionDeclaration[] {
   const raw = settings.nativeTools.functionDeclarations.trim();
   if (!raw || raw === "[]") return [];
@@ -365,7 +465,9 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       const settings = getSettings();
       const provider = settings.providers[settings.activeProvider];
       if (!provider) throw new Error(settings.language === "zh" ? "当前提供商不存在。请在设置中选择一个提供商。" : "The active provider no longer exists. Select one in Settings.");
-      if (!provider.apiKey.trim()) {
+      const savedAdapter = configuredAdapter(provider, provider.model);
+      const adapter = savedAdapter ? materializeAdapter(savedAdapter) : undefined;
+      if (!provider.apiKey.trim() && adapter?.auth?.type !== "none") {
         throw new Error(settings.language === "zh" ? "请先在“设置 → API 与模型”中填写 API Key。密钥仅保存于当前浏览器。" : "Add an API key in Settings → API & models first. It remains in this browser only.");
       }
 
@@ -389,7 +491,47 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
         }
       };
       let response: Response;
-      if (provider.kind === "openai") {
+      if (adapter) {
+        const system = settings.systemPrompt.trim();
+        const prompt = promptFromMessages(messages, system, adapter.request?.promptTemplate);
+        const adapterContext: TemplateContext = {
+          model: provider.model,
+          stream: true,
+          system: system || undefined,
+          "system.gemini": system ? { parts: [{ text: system }] } : undefined,
+          "messages.openai": openAiMessages(messages),
+          "messages.anthropic": anthropicMessages(messages),
+          "messages.gemini": googleContents(messages),
+          "tools.openai": declarations.length ? openAiTools(declarations) : undefined,
+          "tools.anthropic": declarations.length ? anthropicTools(declarations) : undefined,
+          "tools.gemini": declarations.length ? googleTools(declarations) : undefined,
+          prompt,
+          "thinking.effort": reasoningEffort ?? undefined,
+          "thinking.enabled": settings.thinkingLevel === "off" ? false : true,
+          "thinking.anthropic": settings.thinkingLevel === "off" ? undefined : { type: "adaptive", display: "summarized" },
+          "thinking.gemini": settings.thinkingLevel === "off" ? undefined : (/^gemini-(?:3|4)/i.test(provider.model)
+            ? { thinkingConfig: { thinkingLevel: settings.thinkingLevel === "custom" ? "medium" : settings.thinkingLevel } }
+            : budget ? { thinkingConfig: { thinkingBudget: budget, includeThoughts: true } } : undefined),
+          maxTokens: budget ? Math.max(4096, budget + 1024) : 4096,
+        };
+        const body = renderAdapterTemplate(adapter.request?.body ?? { model: "{{model}}", stream: true, messages: "{{messages.openai}}" }, adapterContext);
+        let endpoint: string;
+        try { endpoint = adapterEndpoint(provider.baseUrl, adapter, provider.model, provider.apiKey); }
+        catch (cause) {
+          throw new Error(providerFailure({
+            language: settings.language,
+            provider,
+            endpoint: provider.baseUrl,
+            summary: settings.language === "zh" ? `适配器端点无效：${cause instanceof Error ? cause.message : String(cause)}` : `The adapter endpoint is invalid: ${cause instanceof Error ? cause.message : String(cause)}`,
+          }));
+        }
+        response = await request(endpoint, {
+          method: adapter.endpoint?.method ?? "POST",
+          signal: abortSignal,
+          headers: adapterHeaders(adapter, provider.apiKey, adapterContext),
+          ...(adapter.endpoint?.method === "GET" ? {} : { body: JSON.stringify(body) }),
+        });
+      } else if (provider.kind === "openai") {
         response = await request(`${trimSlash(provider.baseUrl)}/chat/completions`, {
           method: "POST",
           signal: abortSignal,
@@ -422,7 +564,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
             ...(settings.systemPrompt.trim() ? { system: settings.systemPrompt.trim() } : {}),
             messages: anthropicMessages(messages),
             ...(declarations.length ? { tools: anthropicTools(declarations) } : {}),
-            ...(budget ? { thinking: { type: "enabled", budget_tokens: budget } } : {}),
+            ...(settings.thinkingLevel !== "off" ? { thinking: { type: "adaptive", display: "summarized" } } : {}),
           }),
         });
       } else {
@@ -435,7 +577,13 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           body: JSON.stringify({
             ...(settings.systemPrompt.trim() ? { system_instruction: { parts: [{ text: settings.systemPrompt.trim() }] } } : {}),
             ...(tools.length ? { tools } : {}),
-            ...(budget ? { generationConfig: { thinkingConfig: { thinkingBudget: budget, includeThoughts: true } } } : {}),
+            ...(settings.thinkingLevel !== "off" ? {
+              generationConfig: {
+                thinkingConfig: /^gemini-(?:3|4)/i.test(provider.model)
+                  ? { thinkingLevel: settings.thinkingLevel === "custom" ? "medium" : settings.thinkingLevel }
+                  : { thinkingBudget: budget ?? 1024, includeThoughts: true },
+              },
+            } : {}),
             contents: googleContents(messages),
           }),
         });
@@ -478,6 +626,83 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
         if (usage.output !== undefined) outputTokens = usage.output;
         return snapshot();
       };
+      if (adapter) {
+        const applyAdapterEvent = (data: unknown) => {
+          const event = mapAdapterEvent(adapter, data);
+          if (event.error) {
+            throw new Error(providerFailure({
+              language: settings.language,
+              provider,
+              endpoint: requestEndpoint,
+              summary: settings.language === "zh" ? "适配器映射到了服务端错误。" : "The adapter mapped a provider error.",
+              details: event.error,
+            }));
+          }
+          return event;
+        };
+        const emitAdapterEvent = function* (data: unknown) {
+          const event = applyAdapterEvent(data);
+          const usageUpdate = event.usage === undefined ? null : updateUsage(event.usage);
+          if (usageUpdate) yield usageUpdate;
+          if (event.reasoning) yield appendReasoning(event.reasoning);
+          if (event.text) yield append(event.text);
+          for (const rawCall of event.toolCalls) {
+            const call = adapterToolCall(rawCall);
+            if (call) yield append(formatFunctionCall(call));
+          }
+        };
+        const format = adapter.stream?.format;
+        if (format === "text") {
+          if (response.body) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            while (true) {
+              const { value, done } = await reader.read();
+              const chunk = decoder.decode(value ?? new Uint8Array(), { stream: !done });
+              if (chunk) yield append(chunk);
+              if (done) break;
+            }
+          }
+        } else if (format === "sse" || format === "ndjson") {
+          const events = format === "sse" ? parseSseEvents(response) : parseNdjsonEvents(response);
+          for await (const data of events) {
+            for (const update of emitAdapterEvent(data)) yield update;
+            if (adapter.stream?.doneWhen && adapterWhenMatches(data, adapter.stream.doneWhen)) break;
+          }
+        } else {
+          let payload: unknown;
+          try { payload = await response.json(); }
+          catch (cause) {
+            throw new Error(providerFailure({
+              language: settings.language,
+              provider,
+              endpoint: requestEndpoint,
+              summary: settings.language === "zh" ? "适配器预期 JSON 响应，但服务端返回的内容无法解析。" : "The adapter expected JSON, but the provider response could not be parsed.",
+              details: cause instanceof Error ? cause.message : String(cause),
+            }));
+          }
+          if (format === "json-array") {
+            for (const item of Array.isArray(payload) ? payload : [payload]) {
+              for (const update of emitAdapterEvent(item)) yield update;
+              if (adapter.stream?.doneWhen && adapterWhenMatches(item, adapter.stream.doneWhen)) break;
+            }
+          } else {
+            const responseText = adapter.response?.text ? readAdapterPath(payload, adapter.response.text).map(textFromUnknown).filter(Boolean).join("") : "";
+            const responseReasoning = adapter.response?.reasoning ? readAdapterPath(payload, adapter.response.reasoning).map(textFromUnknown).filter(Boolean).join("") : "";
+            const responseUsage = adapter.response?.usage ? readAdapterPath(payload, adapter.response.usage)[0] : undefined;
+            const responseError = adapter.response?.error ? readAdapterPath(payload, adapter.response.error).map(textFromUnknown).filter(Boolean).join("\n") : "";
+            if (responseError) throw new Error(providerFailure({ language: settings.language, provider, endpoint: requestEndpoint, summary: settings.language === "zh" ? "适配器映射到了服务端错误。" : "The adapter mapped a provider error.", details: responseError }));
+            if (responseUsage !== undefined) {
+              const usageUpdate = updateUsage(responseUsage);
+              if (usageUpdate) yield usageUpdate;
+            }
+            if (responseReasoning) yield appendReasoning(responseReasoning);
+            if (responseText) yield append(responseText);
+          }
+        }
+        if (!fullText) yield append(settings.language === "zh" ? "（模型没有返回文本内容）" : "(The model returned no text.)");
+        return;
+      }
       const openAiCalls = new Map<number, { id?: string; name?: string; arguments: string }>();
       const anthropicCalls = new Map<number, { id?: string; name?: string; input?: unknown; partialJson: string }>();
       let emittedToolCall = false;
@@ -597,11 +822,40 @@ export async function generateChatTitle(settings: AppSettings, prompt: string): 
   const providerId = settings.namingProvider;
   const provider = settings.providers[providerId];
   const model = settings.namingModel.trim();
-  if (!model || !provider.apiKey.trim()) return null;
+  if (!model || !provider) return null;
+  const savedAdapter = configuredAdapter(provider, model);
+  const adapter = savedAdapter ? materializeAdapter(savedAdapter) : undefined;
+  if (!provider.apiKey.trim() && adapter?.auth?.type !== "none") return null;
   const instruction = "用用户的语言为以下对话生成一个极短标题。只输出标题，不加引号或标点说明，最多 18 个汉字或 40 个字符。";
   let response: Response;
 
-  if (!provider) return null;
+  if (adapter) {
+    const adapterContext: TemplateContext = {
+      model,
+      stream: false,
+      system: instruction,
+      "system.gemini": { parts: [{ text: instruction }] },
+      "messages.openai": [{ role: "system", content: instruction }, { role: "user", content: prompt }],
+      "messages.anthropic": [{ role: "user", content: prompt }],
+      "messages.gemini": [{ role: "user", parts: [{ text: prompt }] }],
+      prompt,
+      maxTokens: 60,
+    };
+    let endpoint: string;
+    try { endpoint = adapterEndpoint(provider.baseUrl, adapter, model, provider.apiKey); } catch { return null; }
+    const rendered = renderAdapterTemplate(adapter.request?.body ?? { model: "{{model}}", stream: false, messages: "{{messages.openai}}" }, adapterContext);
+    const body = rendered && typeof rendered === "object" && !Array.isArray(rendered) ? { ...rendered as Record<string, unknown>, stream: false } : rendered;
+    try {
+      response = await fetch(endpoint, {
+        method: adapter.endpoint?.method ?? "POST",
+        headers: adapterHeaders(adapter, provider.apiKey, adapterContext),
+        ...(adapter.endpoint?.method === "GET" ? {} : { body: JSON.stringify(body) }),
+      });
+      if (!response.ok) return null;
+      const responseBody = await response.json();
+      return adapter.response?.text ? readAdapterPath(responseBody, adapter.response.text).map(textFromUnknown).filter(Boolean).join("").trim() || null : null;
+    } catch { return null; }
+  }
 
   if (provider.kind === "openai") {
     response = await fetch(`${trimSlash(provider.baseUrl)}/chat/completions`, {

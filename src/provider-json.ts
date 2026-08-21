@@ -1,3 +1,4 @@
+import { validateAdapterConfig } from "./adapter-config";
 import type { ProviderKind, ProviderSettings } from "./types";
 
 type ProviderJsonSource = Record<string, unknown>;
@@ -39,7 +40,18 @@ export function parseProviderJson(value: string): ProviderSettings[] {
     if (sourceModels !== undefined && (!Array.isArray(sourceModels) || sourceModels.some((item) => typeof item !== "string"))) throw new Error(`第 ${index + 1} 个渠道商的 models 必须是文本数组。`);
     const models = [...new Set([...(sourceModels ?? []), model].map((item) => String(item).trim()).filter(Boolean))];
     if (!models.length) throw new Error(`第 ${index + 1} 个渠道商至少需要一个 model 或 models。`);
-    return { name, kind, apiKey, baseUrl, model: model && models.includes(model) ? model : models[0], models, emoji };
+    let adapter: ProviderSettings["adapter"];
+    let modelAdapters: ProviderSettings["modelAdapters"];
+    try {
+      if (candidate.adapter !== undefined) adapter = validateAdapterConfig(candidate.adapter);
+      if (candidate.modelAdapters !== undefined) {
+        if (!isObject(candidate.modelAdapters)) throw new Error("modelAdapters 必须是对象。");
+        modelAdapters = Object.fromEntries(Object.entries(candidate.modelAdapters).map(([modelId, value]) => [modelId, validateAdapterConfig(value)]));
+      }
+    } catch (cause) {
+      throw new Error(`第 ${index + 1} 个渠道商的高级适配器无效：${cause instanceof Error ? cause.message : "JSON 无法读取。"}`);
+    }
+    return { name, kind, apiKey, baseUrl, model: model && models.includes(model) ? model : models[0], models, emoji, ...(adapter ? { adapter } : {}), ...(modelAdapters && Object.keys(modelAdapters).length ? { modelAdapters } : {}) };
   });
 }
 

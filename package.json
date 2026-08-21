@@ -14,6 +14,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "tsc --noEmit",
+    "test:adapters": "tsc --outDir /tmp/mosschat-adapter-fixture-build --module commonjs --moduleResolution node --target es2022 --skipLibCheck scripts/adapter-fixtures.ts src/adapter-config.ts src/types.ts && node /tmp/mosschat-adapter-fixture-build/scripts/adapter-fixtures.js",
     "check": "npm run lint && npm run build"
   },
   "dependencies": {

@@ -7,6 +7,78 @@ export type ThinkingLevel = string;
 
 export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "custom"];
 
+/** Features a model endpoint accepts. They are descriptive for built-ins and usable in custom adapter bodies. */
+export type ProviderCapability = "streaming" | "reasoning" | "vision" | "pdf" | "tools";
+
+export const DEFAULT_PROVIDER_CAPABILITIES: ProviderCapability[] = ["streaming", "reasoning", "vision", "pdf", "tools"];
+
+export type AdapterBase = "openai-compatible" | "anthropic-messages" | "gemini-generate-content" | "ollama-chat" | "azure-openai" | "legacy-completions";
+export type AdapterStreamFormat = "sse" | "ndjson" | "json-array" | "text";
+export type AdapterMessageFormat = "openai" | "anthropic" | "gemini" | "prompt";
+
+/**
+ * Declarative, data-only request adapter. Values in `request.body`, headers and
+ * query support safe {{placeholders}}; executable JavaScript is deliberately
+ * not supported.
+ */
+export type AdapterConfig = {
+  schema: 1;
+  id?: string;
+  extends?: AdapterBase;
+  endpoint?: {
+    chat?: string;
+    models?: string;
+    method?: "POST" | "GET";
+    query?: Record<string, string>;
+  };
+  auth?: {
+    type: "bearer" | "header" | "query" | "none";
+    name?: string;
+    prefix?: string;
+  };
+  extraHeaders?: Record<string, string>;
+  request?: {
+    messageFormat?: AdapterMessageFormat;
+    body?: Record<string, unknown>;
+    promptTemplate?: {
+      system?: string;
+      user?: string;
+      assistant?: string;
+      suffix?: string;
+    };
+  };
+  stream?: {
+    format?: AdapterStreamFormat;
+    /** A simple JSON-path condition such as `$.done == true`, or `[DONE]`. */
+    doneWhen?: string;
+    events?: {
+      text?: AdapterEventMapping[];
+      reasoning?: AdapterEventMapping[];
+      /** Extract a complete tool-call object when the provider streams one in a single record. */
+      toolCall?: AdapterEventMapping[];
+      usage?: AdapterEventMapping[];
+      error?: AdapterEventMapping[];
+    };
+  };
+  /** Mapping used when an endpoint returns one JSON document instead of a stream. */
+  response?: {
+    text?: string;
+    reasoning?: string;
+    usage?: string;
+    error?: string;
+  };
+  capabilities?: ProviderCapability[];
+  thinking?: {
+    allowed?: ThinkingLevel[];
+  };
+};
+
+export type AdapterEventMapping = {
+  /** Optional simple predicate, for example `$.type == 'content_block_delta'`. */
+  when?: string;
+  extract: string;
+};
+
 /** A model is scoped to its provider so identical model names do not share preferences. */
 export type ModelDisplayItem = {
   providerId: ProviderId;
@@ -16,6 +88,8 @@ export type ModelDisplayItem = {
 export type ModelThinkingSettings = {
   defaultThinkingLevel: ThinkingLevel;
   availableThinkingLevels: ThinkingLevel[];
+  /** Kept on the model rather than a provider because capability support is model-specific. */
+  capabilities?: ProviderCapability[];
 };
 
 export const modelSettingsKey = (providerId: ProviderId, model: string) => JSON.stringify([providerId, model]);
@@ -29,6 +103,10 @@ export type ProviderSettings = {
   models: string[];
   /** Display emoji for this provider in model selectors. */
   emoji: string;
+  /** Optional entry-wide override. A model override below takes precedence. */
+  adapter?: AdapterConfig;
+  /** Optional overrides keyed by exact model id. */
+  modelAdapters?: Record<string, AdapterConfig>;
 };
 
 export type PromptPreset = {

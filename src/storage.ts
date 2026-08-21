@@ -1,7 +1,8 @@
 import Dexie, { type EntityTable } from "dexie";
 import { strToU8, zipSync } from "fflate";
+import { normalizeAdapterConfig } from "./adapter-config";
 import { randomUuid } from "./id";
-import { DEFAULT_THINKING_LEVELS, modelSettingsKey, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type PromptPreset, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "./types";
+import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, modelSettingsKey, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type PromptPreset, type ProviderCapability, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "./types";
 
 const DATA_KEY = "ai-chat.local.data.v1";
 const SETTINGS_KEY = "ai-chat.local.settings.v1";
@@ -126,7 +127,7 @@ function safeParse<T>(value: string | null, fallback: T): T {
 }
 
 function inferProvider(id: string, input?: Partial<ProviderSettings> & { modelEmojis?: unknown }): ProviderSettings {
-  const { modelEmojis: legacyModelEmojis, ...providerInput } = input ?? {};
+  const { modelEmojis: legacyModelEmojis, adapter: rawAdapter, modelAdapters: rawModelAdapters, ...providerInput } = input ?? {};
   const kind: ProviderKind = input?.kind ?? (id === "anthropic" ? "anthropic" : id === "google" ? "google" : "openai");
   const fallback = baseProviders[id] ?? (kind === "anthropic" ? baseProviders.anthropic : kind === "google" ? baseProviders.google : baseProviders.openai);
   const models = [...new Set([...(Array.isArray(input?.models) ? input.models : []), input?.model?.trim() || fallback.model].map((model) => model.trim()).filter(Boolean))];
@@ -141,7 +142,18 @@ function inferProvider(id: string, input?: Partial<ProviderSettings> & { modelEm
     model: selectedModel,
     models,
     emoji,
+    ...(normalizeAdapterConfig(rawAdapter) ? { adapter: normalizeAdapterConfig(rawAdapter) } : {}),
+    ...(isObjectRecord(rawModelAdapters) ? {
+      modelAdapters: Object.fromEntries(Object.entries(rawModelAdapters).flatMap(([model, adapter]) => {
+        const normalized = normalizeAdapterConfig(adapter);
+        return normalized && model.trim() ? [[model.trim(), normalized]] : [];
+      })),
+    } : {}),
   };
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function configuredModels(providers: Record<string, ProviderSettings>, providerOrder: string[]): ModelDisplayItem[] {
@@ -157,6 +169,13 @@ function normalizedThinkingLevels(value: unknown): ThinkingLevel[] {
     .filter((level): level is string => typeof level === "string")
     .map((level) => level.trim().slice(0, 80))
     .filter(Boolean))];
+}
+
+function normalizedCapabilities(value: unknown): ProviderCapability[] {
+  if (!Array.isArray(value)) return [...DEFAULT_PROVIDER_CAPABILITIES];
+  const valid = new Set<ProviderCapability>(["streaming", "reasoning", "vision", "pdf", "tools"]);
+  const capabilities = [...new Set(value.filter((item): item is ProviderCapability => typeof item === "string" && valid.has(item as ProviderCapability)))];
+  return capabilities.length ? capabilities : [...DEFAULT_PROVIDER_CAPABILITIES];
 }
 
 function normalizeModelDisplayOrder(value: unknown, available: ModelDisplayItem[]): ModelDisplayItem[] {
@@ -185,7 +204,7 @@ function normalizeModelThinking(value: unknown, available: ModelDisplayItem[], f
     const availableThinkingLevels = normalizedThinkingLevels(candidate.availableThinkingLevels);
     const levels = availableThinkingLevels.length ? availableThinkingLevels : [...DEFAULT_THINKING_LEVELS];
     if (!levels.includes(defaultThinkingLevel)) levels.unshift(defaultThinkingLevel);
-    return [modelSettingsKey(item.providerId, item.model), { defaultThinkingLevel, availableThinkingLevels: levels }];
+    return [modelSettingsKey(item.providerId, item.model), { defaultThinkingLevel, availableThinkingLevels: levels, capabilities: normalizedCapabilities(candidate.capabilities) }];
   }));
 }
 
