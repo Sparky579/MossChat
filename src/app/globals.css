@@ -204,6 +204,8 @@ button { color: inherit; }
 .markdown table { display: block; max-width: 100%; overflow: auto; border-collapse: collapse; }.markdown th,.markdown td { padding: 6px 9px; border: 1px solid var(--line); }
 .markdown-renderer { position: relative; min-width: 0; max-width: 100%; contain: layout style; }
 .markdown-renderer > div { min-width: 0; max-width: 100%; }
+.markdown-renderer > :first-child > :first-child { margin-top: 0; }
+.markdown-renderer > :last-child > :last-child { margin-bottom: 0; }
 .markdown-renderer [data-streamdown="code-block"] { position: relative; display: block; min-width: 0; margin: 14px 0; overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: #202124; color: #f8f9fa; contain: layout paint style; }
 .markdown-renderer [data-streamdown="code-block-header"] { display: flex; min-height: 34px; align-items: center; padding: 0 11px; border-bottom: 1px solid rgba(255,255,255,.12); color: #bdc1c6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; letter-spacing: .04em; text-transform: lowercase; }
 .markdown-renderer [data-streamdown="code-block-body"] { min-width: 0; overflow: auto; background: transparent; }
