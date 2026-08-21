@@ -39,6 +39,51 @@ const trimSlash = (url: string) => url.replace(/\/+$/, "");
 const isOpenRouter = (baseUrl: string) => /(^|\.)openrouter\.ai(?:\/|$)/i.test(trimSlash(baseUrl).replace(/^https?:\/\//, ""));
 const supportsOpenAiUsageStream = (baseUrl: string) => isOpenRouter(baseUrl) || /^https:\/\/api\.openai\.com(?:\/|$)/i.test(trimSlash(baseUrl));
 
+const displayEndpoint = (value: string) => {
+  try {
+    const url = new URL(value);
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (/(?:^|[_-])(key|token|secret|password)(?:$|[_-])/i.test(key) || /^(?:key|token|secret|password)$/i.test(key)) url.searchParams.set(key, "REDACTED");
+    }
+    return url.toString();
+  } catch {
+    return value.replace(/([?&](?:api[_-]?key|key|token|secret|password)=)[^&]*/gi, "$1REDACTED");
+  }
+};
+
+const redactErrorDetails = (value: string) => value
+  .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|(?:cfut|re)_[A-Za-z0-9_-]{12,})\b/g, "[redacted]")
+  .replace(/((?:api[_ -]?key|authorization|token|password)\s*[=:]\s*["']?)[^\s,"'}\]]+/gi, "$1[redacted]");
+
+const conciseErrorBody = (value: unknown) => {
+  const raw = typeof value === "string" ? value.trim() : JSON.stringify(value, null, 2);
+  if (!raw) return "";
+  const cleaned = redactErrorDetails(raw);
+  return cleaned.length > 2_000 ? `${cleaned.slice(0, 2_000)}\n… (truncated)` : cleaned;
+};
+
+const streamErrorDetails = (event: Record<string, unknown>) => {
+  if (!event.error && event.type !== "error") return "";
+  return conciseErrorBody(event.error ?? event);
+};
+
+const providerFailure = ({ language, provider, endpoint, summary, details }: {
+  language: AppSettings["language"];
+  provider: { name: string; kind: string };
+  endpoint: string;
+  summary: string;
+  details?: string;
+}) => {
+  const isChinese = language === "zh";
+  return [
+    isChinese ? "API 请求失败。" : "API request failed.",
+    `${isChinese ? "提供商" : "Provider"}: ${provider.name} (${provider.kind})`,
+    `${isChinese ? "请求地址" : "Endpoint"}: \`${displayEndpoint(endpoint)}\``,
+    summary,
+    ...(details ? [`${isChinese ? "服务端返回" : "Server response"}:\n\`\`\`text\n${details}\n\`\`\``] : []),
+  ].join("\n\n");
+};
+
 const thinkingBudget = (settings: AppSettings): number | null => {
   if (settings.thinkingLevel === "custom") return settings.thinkingBudget > 0 ? settings.thinkingBudget : null;
   const presetBudget: Record<string, number | null> = { off: null, low: 1024, medium: 2048, high: 4096 };
@@ -327,9 +372,25 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       const declarations = functionDeclarations(settings);
       const budget = thinkingBudget(settings);
       const reasoningEffort = openAiReasoningEffort(settings);
+      let requestEndpoint = "";
+      const request = async (endpoint: string, init: RequestInit) => {
+        requestEndpoint = endpoint;
+        try {
+          return await fetch(endpoint, init);
+        } catch (cause) {
+          if (abortSignal.aborted) throw cause;
+          const original = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
+          throw new Error(providerFailure({
+            language: settings.language,
+            provider,
+            endpoint,
+            summary: settings.language === "zh" ? `网络请求未能建立：${original}\n请检查 Endpoint、网络、CORS 和代理证书。` : `The network request could not be established: ${original}\nCheck the endpoint, network, CORS, and any proxy certificate.`,
+          }));
+        }
+      };
       let response: Response;
       if (provider.kind === "openai") {
-        response = await fetch(`${trimSlash(provider.baseUrl)}/chat/completions`, {
+        response = await request(`${trimSlash(provider.baseUrl)}/chat/completions`, {
           method: "POST",
           signal: abortSignal,
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` },
@@ -346,7 +407,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           }),
         });
       } else if (provider.kind === "anthropic") {
-        response = await fetch(`${trimSlash(provider.baseUrl)}/v1/messages`, {
+        response = await request(`${trimSlash(provider.baseUrl)}/v1/messages`, {
           method: "POST",
           signal: abortSignal,
           headers: {
@@ -367,7 +428,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       } else {
         const endpoint = `${trimSlash(provider.baseUrl)}/v1beta/models/${encodeURIComponent(provider.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
         const tools = googleTools(declarations);
-        response = await fetch(endpoint, {
+        response = await request(endpoint, {
           method: "POST",
           signal: abortSignal,
           headers: { "Content-Type": "application/json" },
@@ -381,8 +442,14 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       }
 
       if (!response.ok) {
-        const details = (await response.text()).slice(0, 600);
-        throw new Error(settings.language === "zh" ? `API 请求失败 (${response.status})：${details || response.statusText}` : `API request failed (${response.status}): ${details || response.statusText}`);
+        const details = conciseErrorBody(await response.text());
+        throw new Error(providerFailure({
+          language: settings.language,
+          provider,
+          endpoint: requestEndpoint,
+          summary: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+          details,
+        }));
       }
 
       let fullText = "";
@@ -426,6 +493,16 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       };
 
       for await (const data of parseSseEvents(response)) {
+        const streamedFailure = streamErrorDetails(data);
+        if (streamedFailure) {
+          throw new Error(providerFailure({
+            language: settings.language,
+            provider,
+            endpoint: requestEndpoint,
+            summary: settings.language === "zh" ? "流式响应返回错误。" : "The streaming response returned an error.",
+            details: streamedFailure,
+          }));
+        }
         if (provider.kind === "openai") {
           const usageUpdate = updateUsage(data.usage ?? (data.response as Record<string, unknown> | undefined)?.usage);
           if (usageUpdate) { yield usageUpdate; continue; }

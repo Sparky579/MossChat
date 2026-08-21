@@ -369,3 +369,20 @@ button:not(:disabled):active { transform: scale(.97); }
   }
   .composer-model-menu { left: 0; right: 0; width: auto; bottom: calc(100% + 8px); }
 }
+
+/* Compact desktops use the same overflow menu as mobile instead of squeezing the toolbar. */
+@media (min-width: 761px) and (max-width: 1200px) {
+  .topbar { gap: 4px; padding-right: 14px; padding-left: 14px; }
+  .top-model { max-width: min(40vw, 360px); }
+  .thinking-button { width: 34px; justify-content: center; padding: 0; }
+  .thinking-button span { display: none; }
+  .desktop-top-utility { display: none !important; }
+  .mobile-top-more { position: relative; display: block; }
+  .mobile-top-more > .top-icon { width: 34px; min-width: 34px; justify-content: center; padding: 0; font-size: 0; }
+  .mobile-top-more > .top-icon svg { margin: 0; }
+  .mobile-top-menu { position: absolute; z-index: 24; top: calc(100% + 8px); right: 0; display: grid; width: min(292px, calc(100vw - 24px)); max-height: calc(100dvh - 84px); gap: 3px; overflow: auto; padding: 7px; border: 1px solid var(--line); border-radius: 13px; background: var(--bg); box-shadow: var(--shadow); transform-origin: top right; animation: moss-pop-in .2s cubic-bezier(.2,.8,.2,1) both; }
+  .mobile-top-menu button, .mobile-top-import { display: flex; width: 100%; min-height: 40px; align-items: center; gap: 9px; padding: 7px 10px; border: 0; border-radius: 9px; color: var(--text); background: transparent; cursor: pointer; font-size: 13px; text-align: left; }
+  .mobile-top-menu button:hover, .mobile-top-import:hover { background: var(--surface-2); }
+  .mobile-top-menu hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--line); }
+  .mobile-top-import input { display: none; }
+}
