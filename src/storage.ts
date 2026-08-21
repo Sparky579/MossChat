@@ -90,9 +90,9 @@ class AiChatDatabase extends Dexie {
 export const db = new AiChatDatabase();
 
 const baseProviders: Record<string, ProviderSettings> = {
-  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash"], modelEmojis: ["🤖"] },
-  openai: { name: "OpenAI compatible", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini"], modelEmojis: ["🤖"] },
-  anthropic: { name: "Anthropic", kind: "anthropic", apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", models: ["claude-sonnet-4-20250514"], modelEmojis: ["🤖"] },
+  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash"], emoji: "🤖" },
+  openai: { name: "OpenAI compatible", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini"], emoji: "🤖" },
+  anthropic: { name: "Anthropic", kind: "anthropic", apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", models: ["claude-sonnet-4-20250514"], emoji: "🤖" },
 };
 
 export const defaultSettings: AppSettings = {
@@ -118,21 +118,22 @@ function safeParse<T>(value: string | null, fallback: T): T {
   try { return JSON.parse(value) as T; } catch { return fallback; }
 }
 
-function inferProvider(id: string, input?: Partial<ProviderSettings>): ProviderSettings {
+function inferProvider(id: string, input?: Partial<ProviderSettings> & { modelEmojis?: unknown }): ProviderSettings {
+  const { modelEmojis: legacyModelEmojis, ...providerInput } = input ?? {};
   const kind: ProviderKind = input?.kind ?? (id === "anthropic" ? "anthropic" : id === "google" ? "google" : "openai");
   const fallback = baseProviders[id] ?? (kind === "anthropic" ? baseProviders.anthropic : kind === "google" ? baseProviders.google : baseProviders.openai);
   const models = [...new Set([...(Array.isArray(input?.models) ? input.models : []), input?.model?.trim() || fallback.model].map((model) => model.trim()).filter(Boolean))];
   const selectedModel = models.includes(input?.model?.trim() ?? "") ? input!.model!.trim() : models[0] ?? fallback.model;
-  const inputEmojis = Array.isArray(input?.modelEmojis) ? input.modelEmojis : [];
-  const modelEmojis = models.map((_, index) => typeof inputEmojis[index] === "string" && inputEmojis[index].trim() ? inputEmojis[index].trim().slice(0, 16) : "🤖");
+  const legacyEmoji = Array.isArray(legacyModelEmojis) && typeof legacyModelEmojis[0] === "string" ? legacyModelEmojis[0] : "";
+  const emoji = typeof providerInput.emoji === "string" && providerInput.emoji.trim() ? providerInput.emoji.trim().slice(0, 16) : legacyEmoji.trim().slice(0, 16) || "🤖";
   return {
     ...fallback,
-    ...input,
+    ...providerInput,
     name: input?.name?.trim() || fallback.name,
     kind,
     model: selectedModel,
     models,
-    modelEmojis,
+    emoji,
   };
 }
 

@@ -12,8 +12,8 @@ export type ProviderSettings = {
   baseUrl: string;
   model: string;
   models: string[];
-  /** Display emoji for each entry in `models`, matched by index. */
-  modelEmojis: string[];
+  /** Display emoji for this provider in model selectors. */
+  emoji: string;
 };
 
 export type PromptPreset = {

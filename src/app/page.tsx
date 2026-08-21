@@ -101,10 +101,8 @@ const orderedProviders = (settings: AppSettings) => settings.providerOrder
   .filter((id) => settings.providers[id])
   .map((id) => [id, settings.providers[id]] as const);
 
-const modelEmoji = (provider: AppSettings["providers"][string] | undefined, model = provider?.model) => {
-  const index = provider?.models.indexOf(model ?? "") ?? -1;
-  return index >= 0 ? provider?.modelEmojis[index] || "🤖" : "🤖";
-};
+const providerEmoji = (provider: AppSettings["providers"][string] | undefined) => provider?.emoji?.trim() || "🤖";
+const COMMON_PROVIDER_EMOJIS = ["🤖", "🧠", "✨", "🔮", "⚡", "🚀", "🦙", "🐱", "🐳", "🦉", "🧩", "🌿"];
 
 const PROVIDER_PRESETS = {
   google: { label: "Gemini", name: "Google Gemini", kind: "google" as ProviderKind, baseUrl: "https://generativelanguage.googleapis.com" },
@@ -471,7 +469,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
       <button type="button" className="icon-button composer-plus" aria-label="Attach files" onClick={() => fileInput.current?.click()}><Plus size={23} /></button>
       <textarea ref={composerInput} rows={1} value={text} placeholder={copy.ask} className="composer-input" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { if (settings.sendWithEnter && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
       <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""}`} ref={modelMenuRef}>
-        <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => setModelOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{modelEmoji(activeProvider)}</span><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
+        <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => setModelOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{providerEmoji(activeProvider)}</span><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
         {modelOpen && <div className="model-menu composer-model-menu"><ModelMenuOptions settings={settings} onChange={onSettingsChange} onClose={() => setModelOpen(false)} /></div>}
       </div>
       <button type="button" className={`icon-button mic-button ${listening ? "is-listening" : ""}`} aria-label="Voice input" onClick={toggleDictation}><Mic size={20} /></button>
@@ -631,7 +629,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
 function ModelMenuOptions({ settings, onChange, onClose }: { settings: AppSettings; onChange: (next: AppSettings) => void; onClose: () => void }) {
   const copy = useCopy();
   return <>
-    {orderedProviders(settings).flatMap(([id, provider]) => provider.models.filter(Boolean).map((model) => <button key={`${id}:${model}`} type="button" className={id === settings.activeProvider && model === provider.model ? "active" : ""} onClick={() => { onChange({ ...settings, activeProvider: id, providers: { ...settings.providers, [id]: { ...provider, model } } }); onClose(); }}><span className="model-menu-label"><i aria-hidden="true">{modelEmoji(provider, model)}</i><span><strong>{provider.name}</strong><small>{model}</small></span></span>{id === settings.activeProvider && model === provider.model && <Check size={16} />}</button>))}
+    {orderedProviders(settings).flatMap(([id, provider]) => provider.models.filter(Boolean).map((model) => <button key={`${id}:${model}`} type="button" className={id === settings.activeProvider && model === provider.model ? "active" : ""} onClick={() => { onChange({ ...settings, activeProvider: id, providers: { ...settings.providers, [id]: { ...provider, model } } }); onClose(); }}><span className="model-menu-label"><i aria-hidden="true">{providerEmoji(provider)}</i><span><strong>{provider.name}</strong><small>{model}</small></span></span>{id === settings.activeProvider && model === provider.model && <Check size={16} />}</button>))}
     <hr />
     <button type="button" onClick={() => { document.dispatchEvent(new CustomEvent("ai-chat:open-settings")); onClose(); }}><Settings size={16} />{copy.manageApi}</button>
   </>;
@@ -650,7 +648,7 @@ function ModelMenu({ settings, onChange }: { settings: AppSettings; onChange: (n
     return () => { document.removeEventListener("pointerdown", closeWhenOutside); document.removeEventListener("keydown", closeOnEscape); };
   }, [open]);
   return <div className="model-menu-wrap" ref={menuRef}>
-    <button type="button" className="top-model" title={provider?.model ?? ""} onClick={() => setOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{modelEmoji(provider)}</span><span className="model-name">{provider?.model ?? "Select a model"}</span><ChevronDown size={16} /></button>
+    <button type="button" className="top-model" title={provider?.model ?? ""} onClick={() => setOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{providerEmoji(provider)}</span><span className="model-name">{provider?.model ?? "Select a model"}</span><ChevronDown size={16} /></button>
     {open && <div className="model-menu top-model-menu"><ModelMenuOptions settings={settings} onChange={onChange} onClose={() => setOpen(false)} /></div>}
   </div>;
 }
@@ -701,6 +699,8 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
   const copy = useCopy();
   const [tab, setTab] = useState<"models" | "behavior" | "tools" | "privacy">("models");
   const [editingProviderIds, setEditingProviderIds] = useState<Set<ProviderId>>(() => new Set());
+  const [emojiPickerProviderId, setEmojiPickerProviderId] = useState<ProviderId | null>(null);
+  const emojiPickerRef = useRef<HTMLDivElement>(null);
   const isEditingProvider = (id: ProviderId) => editingProviderIds.has(id);
   const setProviderEditing = (id: ProviderId, editing: boolean) => setEditingProviderIds((current) => {
     const next = new Set(current);
@@ -708,6 +708,14 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     else next.delete(id);
     return next;
   });
+  useEffect(() => {
+    if (!emojiPickerProviderId) return;
+    const closeWhenOutside = (event: PointerEvent) => { if (!emojiPickerRef.current?.contains(event.target as Node)) setEmojiPickerProviderId(null); };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setEmojiPickerProviderId(null); };
+    document.addEventListener("pointerdown", closeWhenOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => { document.removeEventListener("pointerdown", closeWhenOutside); document.removeEventListener("keydown", closeOnEscape); };
+  }, [emojiPickerProviderId]);
   const updateProvider = (id: ProviderId, field: "name" | "kind" | "apiKey" | "baseUrl" | "model", value: string) => {
     if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
@@ -728,16 +736,15 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     models[index] = value;
     onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models, model: provider.model === previous ? value : provider.model } } });
   };
-  const updateModelEmoji = (id: ProviderId, index: number, value: string) => {
+  const updateProviderEmoji = (id: ProviderId, value: string) => {
     if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
-    const modelEmojis = provider.models.map((_, itemIndex) => itemIndex === index ? value.slice(0, 16) : provider.modelEmojis[itemIndex] || "🤖");
-    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, modelEmojis } } });
+    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, emoji: value.slice(0, 16) } } });
   };
   const addModel = (id: ProviderId) => {
     if (!isEditingProvider(id)) return;
     const provider = settings.providers[id];
-    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models: [...provider.models, ""], modelEmojis: [...provider.modelEmojis, "🤖"] } } });
+    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models: [...provider.models, ""] } } });
   };
   const removeModel = (id: ProviderId, index: number) => {
     if (!isEditingProvider(id)) return;
@@ -745,11 +752,11 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     if (provider.models.length <= 1) return;
     const removed = provider.models[index];
     const models = provider.models.filter((_, itemIndex) => itemIndex !== index);
-    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models, modelEmojis: provider.modelEmojis.filter((_, itemIndex) => itemIndex !== index), model: provider.model === removed ? models[0] : provider.model } } });
+    onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models, model: provider.model === removed ? models[0] : provider.model } } });
   };
   const addProvider = () => {
     const id = newId("provider");
-    onChange({ ...settings, providers: { ...settings.providers, [id]: { name: "New provider", kind: "openai", apiKey: "", baseUrl: "", model: "", models: [""], modelEmojis: ["🤖"] } }, providerOrder: [id, ...settings.providerOrder] });
+    onChange({ ...settings, providers: { ...settings.providers, [id]: { name: "New provider", kind: "openai", apiKey: "", baseUrl: "", model: "", models: [""], emoji: "🤖" } }, providerOrder: [id, ...settings.providerOrder] });
     setProviderEditing(id, true);
   };
   const moveProvider = (id: ProviderId, direction: -1 | 1) => {
@@ -779,13 +786,14 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
             return <fieldset key={id} className={editing ? "is-editing" : ""}>
               <legend>{provider.name}</legend>
               <div className="provider-title-actions"><div className="provider-order-actions"><span>{settings.language === "zh" ? "排序" : "Order"}</span><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button></div><div className="provider-row-actions"><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div></div>
+              <div className="provider-emoji-control" ref={emojiPickerProviderId === id ? emojiPickerRef : undefined}><span>Emoji</span><input disabled={!editing} aria-label={settings.language === "zh" ? `${provider.name} 的 Emoji` : `Emoji for ${provider.name}`} value={providerEmoji(provider)} maxLength={16} onChange={(event) => updateProviderEmoji(id, event.target.value)} onBlur={(event) => { if (!event.currentTarget.value.trim()) updateProviderEmoji(id, "🤖"); }} /><button type="button" disabled={!editing} onClick={() => setEmojiPickerProviderId((current) => current === id ? null : id)}>{settings.language === "zh" ? "常用 Emoji" : "Pick emoji"}</button>{emojiPickerProviderId === id && <div className="provider-emoji-picker" role="dialog" aria-label={settings.language === "zh" ? "选择渠道商 Emoji" : "Choose provider emoji"}>{COMMON_PROVIDER_EMOJIS.map((emoji) => <button type="button" key={emoji} className={providerEmoji(provider) === emoji ? "active" : ""} title={emoji} onClick={() => { updateProviderEmoji(id, emoji); setEmojiPickerProviderId(null); }}>{emoji}</button>)}</div>}</div>
               <div className="provider-presets"><span>{settings.language === "zh" ? "端点预设" : "Endpoint preset"}</span><button type="button" className="provider-edit-toggle" onClick={() => setProviderEditing(id, !editing)}><Pencil size={13} />{editing ? (settings.language === "zh" ? "完成编辑" : "Done editing") : (settings.language === "zh" ? "编辑配置" : "Edit provider")}</button>{(Object.keys(PROVIDER_PRESETS) as ProviderPresetId[]).map((presetId) => <button type="button" disabled={!editing} key={presetId} className={provider.baseUrl === PROVIDER_PRESETS[presetId].baseUrl ? "active" : ""} onClick={() => applyProviderPreset(id, presetId)}>{PROVIDER_PRESETS[presetId].label}</button>)}</div>
               {!editing && <p className="provider-saved-endpoint">{settings.language === "zh" ? "已保存端点" : "Saved endpoint"}<code>{provider.baseUrl || "—"}</code></p>}
               <label>Provider name<input disabled={!editing} value={provider.name} onChange={(event) => updateProvider(id, "name", event.target.value)} /></label>
               <label>Protocol<select disabled={!editing} value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label>
               <label>{copy.key}<input disabled={!editing} type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label>
               <label>{copy.baseUrl}<input disabled={!editing} value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label>
-              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => updateProvider(id, "model", model)}><Check size={14} /></button><input disabled={!editing} className="model-emoji-input" aria-label={settings.language === "zh" ? `${model || "模型"} 的 Emoji` : `Emoji for ${model || "model"}`} title={settings.language === "zh" ? "模型 Emoji" : "Model emoji"} value={provider.modelEmojis[modelIndex] || "🤖"} maxLength={16} onChange={(event) => updateModelEmoji(id, modelIndex, event.target.value)} onBlur={(event) => { if (!event.currentTarget.value.trim()) updateModelEmoji(id, modelIndex, "🤖"); }} /><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
+              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => updateProvider(id, "model", model)}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
             </fieldset>;
           })}
         </>}
