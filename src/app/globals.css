@@ -353,3 +353,17 @@ button:not(:disabled):active { transform: scale(.97); }
   .settings-dialog, .backup-dialog, .prompt-dialog, .feedback-dialog, .sync-dialog, .sync-review-dialog, .provider-json-dialog, .install-dialog { width: min(100%, calc(100vw - 16px)); max-height: calc(100dvh - 16px); }
   .settings-dialog { height: min(720px, calc(100dvh - 16px)); }
 }
+
+/* Floating menus are always constrained to the space on the side they open. */
+@media (max-width: 760px) {
+  .export-menu, .sync-menu, .top-model-menu, .thinking-menu, .mobile-top-menu {
+    max-height: calc(100dvh - 84px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .composer-model-menu, .composer-command-menu {
+    max-height: calc(100dvh - 156px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
