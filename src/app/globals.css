@@ -89,6 +89,7 @@ button { color: inherit; }
 .action-notebook-list { display: grid; gap: 1px; margin: 2px 0; padding: 3px; border-radius: 7px; background: var(--surface-2); }
 .action-notebook-list > button { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-running-indicator { flex: 0 0 auto; color: #198754; animation: sync-spin .9s linear infinite; }
 .chat-title-editor { width: 100%; min-width: 0; flex: 1; min-height: 31px; padding: 5px 8px; border: 1px solid #198754; border-radius: 8px; outline: 0; color: var(--text); background: var(--bg); font-size: 13px; }
 .profile-row { display: flex; align-items: center; gap: 10px; min-height: 54px; margin: 5px -2px -2px; padding: 6px 3px; border-top: 1px solid var(--line); }
 .profile-row > div:nth-child(2) { display: grid; gap: 1px; flex: 1; font-size: 13px; }
@@ -155,6 +156,10 @@ button { color: inherit; }
 .model-menu button.active { color: var(--blue); background: var(--surface); }
 .model-menu hr { border: 0; border-top: 1px solid var(--line); margin: 6px 0; }
 
+.thread-hosts { display: contents; }
+.thread-host { min-height: 0; }
+.thread-host.is-active { display: flex; flex: 1; }
+.thread-host.is-background { display: none; }
 .thread-root { position: relative; display: flex; min-height: 0; flex: 1; flex-direction: column; }
 .hero-state { display: flex; width: min(800px, calc(100% - 32px)); min-height: 0; margin: 0 auto; padding: clamp(28px, 11vh, 104px) 0 48px; flex: 1; flex-direction: column; justify-content: center; overflow-y: auto; overscroll-behavior: contain; }
 .hero-copy { display: grid; justify-items: center; margin-bottom: 25px; text-align: center; }

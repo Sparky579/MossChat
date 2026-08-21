@@ -16,6 +16,7 @@ import {
   FileText,
   GitBranch,
   ImagePlus,
+  LoaderCircle,
   Menu,
   MessageSquarePlus,
   MessageSquareText,
@@ -66,6 +67,8 @@ const COPY = {
 
 const LocaleContext = createContext<Locale>("en");
 const useCopy = () => COPY[useContext(LocaleContext)];
+
+const chatIsRunning = (chat: Chat) => chat.messages.some((message) => Boolean(message.status?.running));
 
 function useCopyFeedback() {
   const locale = useContext(LocaleContext);
@@ -1451,10 +1454,15 @@ export default function Home() {
   const activeChat = data.chats.find((chat) => chat.id === activeChatId) ?? null;
   const activeNotebook = data.notebooks.find((notebook) => notebook.id === activeNotebookId) ?? null;
   const promptNotebook = activeChat?.notebookId ? data.notebooks.find((notebook) => notebook.id === activeChat.notebookId) ?? null : notebookViewOpen ? activeNotebook : null;
-  const activeSystemPrompt = combinedNotebookPrompt(activeChat, promptNotebook ?? undefined, settings.systemPrompt);
   const openPromptSettings = (scope: PromptScope) => { setPromptDialogScope(scope); setPromptDialogOpen(true); };
+  const runningChats = data.chats.filter(chatIsRunning);
+  // Keep the active thread and every in-flight thread mounted in one keyed list.
+  // Switching views can then only hide a thread, never trigger its abort cleanup.
+  const mountedThreads = activeChat
+    ? [activeChat, ...runningChats.filter((chat) => chat.id !== activeChat.id)]
+    : runningChats;
   const syncReady = isSyncConfigured(syncConfig);
-  const hasStreamingMessage = data.chats.some((chat) => chat.messages.some((message) => Boolean(message.status?.running)));
+  const hasStreamingMessage = runningChats.length > 0;
   const syncSignature = useMemo(() => JSON.stringify({
     chats: data.chats.map((chat) => [chat.id, chat.updatedAt, chat.messages.length, chat.messages[chat.messages.length - 1]?.id]),
     notebooks: data.notebooks.map((notebook) => [notebook.id, notebook.updatedAt]),
@@ -1866,7 +1874,7 @@ export default function Home() {
         })}
         </div>
       </div>
-      <div className="side-section recent-section"><div className="section-label"><span>{copy.recent}</span></div>{visibleChats.slice(0, 11).map((chat) => <div className={`side-item chat-item ${activeChatId === chat.id && !notebookViewOpen ? "active" : ""}`} key={chat.id}><div className="chat-row">{renamingChatId === chat.id ? <input className="chat-title-editor" autoFocus value={chatTitleDraft} aria-label={settings.language === "zh" ? "会话标题" : "Chat title"} onChange={(event) => setChatTitleDraft(event.target.value)} onBlur={() => saveRenamedChat(chat.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveRenamedChat(chat.id); } if (event.key === "Escape") setRenamingChatId(null); }} /> : <button className="chat-select" type="button" title={chat.title} onClick={() => selectChat(chat.id)}><span className="chat-title">{chat.title}</span>{chat.pinned && <Pin size={13} fill="currentColor" />}</button>}<button className="chat-more" type="button" aria-label={settings.language === "zh" ? "会话操作" : "Chat actions"} title={settings.language === "zh" ? "会话操作" : "Chat actions"} onClick={() => { setExpandedChatId((id) => id === chat.id ? null : chat.id); setAddingNotebookForChatId(null); }}><MoreHorizontal size={16} /></button></div>{expandedChatId === chat.id && <div className="chat-actions-panel"><button type="button" onClick={() => toggleChatPin(chat.id)}><Pin size={14} fill={chat.pinned ? "currentColor" : "none"} />{chat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin") : (settings.language === "zh" ? "置顶" : "Pin")}</button><button type="button" onClick={() => beginRenameChat(chat.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" onClick={() => setAddingNotebookForChatId((id) => id === chat.id ? null : chat.id)}><BookOpen size={14} />{settings.language === "zh" ? "添加到 Notebook" : "Add to notebook"}</button>{addingNotebookForChatId === chat.id && <div className="action-notebook-list">{data.notebooks.map((notebook) => <button type="button" key={notebook.id} onClick={() => addChatToNotebook(chat.id, notebook.id)}>{notebook.title}</button>)}<button type="button" onClick={() => createNotebookForChat(chat.id)}><Plus size={14} />{settings.language === "zh" ? "新建 Notebook" : "New notebook"}</button></div>}<button type="button" className="danger" onClick={() => removeChat(chat.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}</div>)}</div>
+      <div className="side-section recent-section"><div className="section-label"><span>{copy.recent}</span></div>{visibleChats.slice(0, 11).map((chat) => <div className={`side-item chat-item ${activeChatId === chat.id && !notebookViewOpen ? "active" : ""}`} key={chat.id}><div className="chat-row">{renamingChatId === chat.id ? <input className="chat-title-editor" autoFocus value={chatTitleDraft} aria-label={settings.language === "zh" ? "会话标题" : "Chat title"} onChange={(event) => setChatTitleDraft(event.target.value)} onBlur={() => saveRenamedChat(chat.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveRenamedChat(chat.id); } if (event.key === "Escape") setRenamingChatId(null); }} /> : <button className="chat-select" type="button" title={chat.title} onClick={() => selectChat(chat.id)}><span className="chat-title">{chat.title}</span>{chatIsRunning(chat) && <LoaderCircle className="chat-running-indicator" size={14} aria-label={settings.language === "zh" ? "正在生成" : "Generating"} />}{chat.pinned && <Pin size={13} fill="currentColor" />}</button>}<button className="chat-more" type="button" aria-label={settings.language === "zh" ? "会话操作" : "Chat actions"} title={settings.language === "zh" ? "会话操作" : "Chat actions"} onClick={() => { setExpandedChatId((id) => id === chat.id ? null : chat.id); setAddingNotebookForChatId(null); }}><MoreHorizontal size={16} /></button></div>{expandedChatId === chat.id && <div className="chat-actions-panel"><button type="button" onClick={() => toggleChatPin(chat.id)}><Pin size={14} fill={chat.pinned ? "currentColor" : "none"} />{chat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin") : (settings.language === "zh" ? "置顶" : "Pin")}</button><button type="button" onClick={() => beginRenameChat(chat.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" onClick={() => setAddingNotebookForChatId((id) => id === chat.id ? null : chat.id)}><BookOpen size={14} />{settings.language === "zh" ? "添加到 Notebook" : "Add to notebook"}</button>{addingNotebookForChatId === chat.id && <div className="action-notebook-list">{data.notebooks.map((notebook) => <button type="button" key={notebook.id} onClick={() => addChatToNotebook(chat.id, notebook.id)}>{notebook.title}</button>)}<button type="button" onClick={() => createNotebookForChat(chat.id)}><Plus size={14} />{settings.language === "zh" ? "新建 Notebook" : "New notebook"}</button></div>}<button type="button" className="danger" onClick={() => removeChat(chat.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}</div>)}</div>
       <div className="profile-row"><div className="profile-avatar">A</div><div><strong>{copy.localWorkspace}</strong><small>{copy.browserOnly}</small></div><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label={copy.settings}><Settings size={18} /></button></div>
     </aside>
     <section className="main-area">
@@ -1897,7 +1905,14 @@ export default function Home() {
           </div>
         </div>
       </header>
-      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : activeChat ? <GeminiThread key={activeChat.id} chat={activeChat} settings={settings} systemPrompt={activeSystemPrompt} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} /> : <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
+      {notebookViewOpen && activeNotebook ? <NotebookView notebook={activeNotebook} chats={visibleChats.filter((chat) => chat.notebookId === activeNotebook.id)} onBack={() => { setNotebookViewOpen(false); setActiveNotebookId(null); }} onCreateChat={() => createChat(activeNotebook.id)} onOpenChat={selectChat} onRename={(title) => renameNotebook(activeNotebook.id, title)} onDelete={() => removeNotebook(activeNotebook.id)} /> : !activeChat && <div className="empty-chat"><MossMark className="app-mark hero-mark" /><h2>{copy.localStart}</h2><p>{copy.localStartDetail}</p><button className="new-chat" type="button" onClick={() => createChat()}><MessageSquarePlus size={17} />{copy.newChat}</button></div>}
+      <div className="thread-hosts">{mountedThreads.map((chat) => {
+        const threadNotebook = chat.notebookId ? data.notebooks.find((notebook) => notebook.id === chat.notebookId) : undefined;
+        const visible = !notebookViewOpen && chat.id === activeChat?.id;
+        return <div className={`thread-host ${visible ? "is-active" : "is-background"}`} aria-hidden={!visible} key={chat.id}>
+          <GeminiThread chat={chat} settings={settings} systemPrompt={combinedNotebookPrompt(chat, threadNotebook, settings.systemPrompt)} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} />
+        </div>;
+      })}</div>
     </section>
     {searchOpen && <div className="modal-backdrop" onMouseDown={() => setSearchOpen(false)}><section className="search-dialog" onMouseDown={(event) => event.stopPropagation()}><Search size={19} /><input autoFocus placeholder={copy.search} value={query} onChange={(event) => setQuery(event.target.value)} /><button className="icon-button" onClick={() => setSearchOpen(false)}><X /></button><div className="search-results"><p>{settings.language === "zh" ? "结果" : "Results"}</p>{searchResults.map((chat) => <button key={chat.id} onClick={() => { selectChat(chat.id); setSearchOpen(false); }}><span><strong>{chat.title}</strong><small>{searchExcerpt(chat, query)}</small></span><time>{shortDate(chat.updatedAt, settings.language)}</time></button>)}{query.trim() && !searchResults.length && <p className="search-empty">{settings.language === "zh" ? "没有匹配的对话内容。" : "No matching chat content."}</p>}</div></section></div>}
     {settingsOpen && <SettingsDialog settings={settings} safety={storageSafety} onChange={setSettings} onClose={() => setSettingsOpen(false)} onRequestPersistent={enablePersistentStorage} onChooseAutoBackup={configureAutomaticBackup} />}
