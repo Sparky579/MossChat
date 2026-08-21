@@ -333,3 +333,23 @@ button:not(:disabled):active { transform: scale(.97); }
 }
 @media (max-width: 760px) { .sync-age { display: none; } }
 @media (max-height: 650px) { .hero-state { min-height: auto; padding: 32px 0 64px; justify-content: flex-start; overflow-y: auto; }.settings-dialog, .backup-dialog { max-height: calc(100dvh - 16px); }.modal-backdrop { align-items: start; padding: 8px; } }
+
+/* Keep mobile menus above the header while allowing their panels to escape it. */
+@media (max-width: 760px) {
+  .topbar { position: relative; z-index: 30; }
+  .top-model-controls { min-width: 0; overflow: visible; }
+  .top-model { min-width: 0; }
+  .top-model-menu, .thinking-menu { z-index: 46; }
+
+  .modal-backdrop { display: flex; align-items: center; justify-content: center; overflow: hidden; padding: 10px; }
+  .settings-dialog, .backup-dialog, .prompt-dialog, .feedback-dialog, .sync-dialog, .sync-review-dialog, .provider-json-dialog, .install-dialog { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); }
+  .settings-dialog { height: min(720px, calc(100dvh - 20px)); }
+  .settings-content, .prompt-dialog-body, .sync-dialog-body, .sync-review-body, .feedback-body, .provider-json-body, .install-dialog > div { min-height: 0; overscroll-behavior: contain; }
+  .install-dialog > div { overflow: auto; }
+}
+
+@media (max-width: 760px) and (max-height: 650px) {
+  .modal-backdrop { align-items: center; padding: 8px; }
+  .settings-dialog, .backup-dialog, .prompt-dialog, .feedback-dialog, .sync-dialog, .sync-review-dialog, .provider-json-dialog, .install-dialog { width: min(100%, calc(100vw - 16px)); max-height: calc(100dvh - 16px); }
+  .settings-dialog { height: min(720px, calc(100dvh - 16px)); }
+}
