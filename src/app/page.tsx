@@ -378,7 +378,7 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onClear, onFunc
   </article>;
 }
 
-function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange, onCommand: handleCommand }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[]) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void; onCommand: (command: "clear" | "compact" | "prompt") => void }) {
+function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[]) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void }) {
   const copy = useCopy();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -392,10 +392,18 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const attachmentsRef = useRef<DraftAttachment[]>([]);
   const activeProvider = settings.providers[settings.activeProvider] ?? orderedProviders(settings)[0]?.[1];
-  const commandOpen = text.trimStart().startsWith("/");
-  const onCommand = (command: "clear" | "compact" | "prompt") => {
-    if (command === "prompt") { setText("/prompt"); return; }
-    handleCommand(command);
+  const commandDraft = text.trimStart();
+  const commandToken = commandDraft.split(/\s+/, 1)[0]?.toLocaleLowerCase() ?? "";
+  const commandOptions = [
+    { value: "/clear", description: settings.language === "zh" ? "保留消息显示，但不再将上方内容发送给模型" : "Keep messages visible, but stop sending earlier context to the model." },
+    { value: "/compact", description: settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model." },
+    { value: "/prompt", description: settings.language === "zh" ? "打开当前对话、Notebook 或全局 Prompt 设置" : "Open prompt settings for this chat, its Notebook, or the global default." },
+  ];
+  const commandMatches = !attachments.length && commandDraft === commandToken && commandToken.startsWith("/") ? commandOptions.filter((command) => command.value.startsWith(commandToken)) : [];
+  const commandOpen = commandMatches.length > 0;
+  const completeCommand = (value: string) => {
+    setText(value);
+    requestAnimationFrame(() => composerInput.current?.focus());
   };
 
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
@@ -475,12 +483,12 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   };
 
   return <div className={`gemini-composer ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); addFiles(Array.from(event.dataTransfer.files)); }}>
-    {commandOpen && <div className="composer-command-menu" role="listbox"><button type="button" onClick={() => { setText(""); onCommand("clear"); }}><strong>/clear</strong><span>{settings.language === "zh" ? "保留消息显示，但不再将上方内容发送给模型" : "Keep messages visible, but stop sending earlier context to the model."}</span></button><button type="button" onClick={() => { setText(""); onCommand("compact"); }}><strong>/compact</strong><span>{settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model."}</span></button><button type="button" onClick={() => { setText(""); onCommand("prompt"); }}><strong>/prompt</strong><span>{settings.language === "zh" ? "打开当前对话、Notebook 或全局 Prompt 设置" : "Open prompt settings for this chat, its Notebook, or the global default."}</span></button></div>}
+    {commandOpen && <div className="composer-command-menu" role="listbox" aria-label={settings.language === "zh" ? "指令补全" : "Command completion"}>{commandMatches.map((command, index) => <button key={command.value} type="button" className={index === 0 ? "is-active" : ""} aria-selected={index === 0} onMouseDown={(event) => event.preventDefault()} onClick={() => completeCommand(command.value)}><span className="composer-command-title"><strong>{command.value}</strong>{index === 0 && <kbd>↵</kbd>}</span><span>{command.description}</span></button>)}</div>}
     {attachments.length > 0 && <div className="composer-attachments">{attachments.map((attachment) => <span className="composer-attachment" key={attachment.id}><span className="attachment-icon">{attachment.file.type.startsWith("image/") ? <ImagePlus size={18} /> : <FileText size={18} />}</span><span className="attachment-name">{attachment.file.name}</span><button className="icon-button attachment-remove" type="button" aria-label="Remove attachment" onClick={() => removeAttachment(attachment.id)}><X size={14} /></button></span>)}</div>}
     <div className="composer-line">
       <input ref={fileInput} hidden type="file" multiple accept="image/*,application/pdf,.txt,.md,.csv,.doc,.docx" onChange={(event) => { addFiles(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
       <button type="button" className="icon-button composer-plus" aria-label="Attach files" onClick={() => fileInput.current?.click()}><Plus size={23} /></button>
-      <textarea ref={composerInput} rows={1} value={text} placeholder={copy.ask} className="composer-input" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { if (settings.sendWithEnter && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
+      <textarea ref={composerInput} rows={1} value={text} placeholder={copy.ask} className="composer-input" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { const firstMatch = commandMatches[0]; if (firstMatch && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && commandToken !== firstMatch.value) { event.preventDefault(); completeCommand(firstMatch.value); return; } if (settings.sendWithEnter && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
       <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""}`} ref={modelMenuRef}>
         <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => setModelOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{providerEmoji(activeProvider)}</span><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
         {modelOpen && <div className="model-menu composer-model-menu"><ModelMenuOptions settings={settings} onChange={onSettingsChange} onClose={() => setModelOpen(false)} /></div>}
@@ -636,7 +644,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
   };
   const empty = chat.messages.length === 0;
   return <div className="thread-root">
-    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onClear={clearConversation} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><p>{copy.mistakes}</p></footer></>}
+    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onClear={clearConversation} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><p>{copy.mistakes}</p></footer></>}
   </div>;
 }
 
