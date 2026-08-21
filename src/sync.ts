@@ -285,6 +285,9 @@ async function recordsFor(data: AppData, settings: AppSettings, includeKeys: boo
   const records: SyncRecord[] = [];
   let compressedImages = 0;
   for (const chat of data.chats) {
+    // Draft conversations are local-only until they contain their first message.
+    // This keeps every device from accumulating empty new-chat placeholders.
+    if (!chat.messages.length) continue;
     const { messages, ...meta } = chat;
     records.push({ type: "chat", id: chat.id, updatedAt: chat.updatedAt, payload: meta });
     for (const [seq, source] of messages.entries()) {
@@ -296,6 +299,12 @@ async function recordsFor(data: AppData, settings: AppSettings, includeKeys: boo
   for (const notebook of data.notebooks) records.push({ type: "notebook", id: notebook.id, updatedAt: notebook.updatedAt, payload: notebook });
   records.push({ type: "settings", id: "settings", updatedAt: new Date().toISOString(), payload: safeSettings(settings, includeKeys) });
   return { records, compressedImages };
+}
+
+/** Empty chat records from older clients are ignored unless the sync also has a message for that chat. */
+function withoutEmptyChats(records: SyncRecord[]) {
+  const chatIdsWithMessages = new Set(records.flatMap((record) => record.type === "message" ? [String((record.payload as { chatId?: unknown }).chatId ?? "")] : []));
+  return records.filter((record) => record.type !== "chat" || chatIdsWithMessages.has(record.id));
 }
 
 function recordFile(record: SyncRecord) {
@@ -476,7 +485,7 @@ export async function inspectWebDavSync({ config, data, settings }: { config: Sy
   if (previousServerId && initialMeta.serverId !== previousServerId) throw new Error(SYNC_CONFIGURATION_CHANGED_ERROR);
   const meta = initialMeta.serverId ? initialMeta : await ensureMeta(config);
   const key = await encryptionKey(config.passphrase, base64ToBytes(meta.salt));
-  const remoteRecords = await readRecords(config, key, entries.filter((file) => file.endsWith(".bin")));
+  const remoteRecords = withoutEmptyChats(await readRecords(config, key, entries.filter((file) => file.endsWith(".bin"))));
   const remoteSummary = summarizeRecords(remoteRecords);
   const localByFile = new Map(local.records.map((record) => [recordFile(record), record]));
   const remoteByFile = new Map(remoteRecords.map((record) => [recordFile(record), record]));
@@ -563,7 +572,7 @@ export async function synchronizeWebDav({ config, data, settings, resolution = "
   const { meta, salt } = await getEncryptionMaterial(config);
   const key = await encryptionKey(config.passphrase, salt);
   const previousIndex = loadIndex(config);
-  const remoteRecords = await readRecords(config, key, await listFiles(config));
+  const remoteRecords = withoutEmptyChats(await readRecords(config, key, await listFiles(config)));
   const maximumRemoteClock = Math.max(0, ...remoteRecords.map(recordClock));
   const local = await recordsFor(data, settings, config.includeKeys);
   const localFiles = new Set(local.records.map(recordFile));
