@@ -313,15 +313,6 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
     }
   };
 
-  const submitMobileReturn = () => {
-    const firstMatch = commandMatches[0];
-    if (firstMatch && commandToken !== firstMatch.value) {
-      completeCommand(firstMatch.value);
-      return;
-    }
-    void send();
-  };
-
   const toggleDictation = () => {
     if (listening) return recognition.current?.stop();
     const speechWindow = window as unknown as SpeechWindow;
@@ -348,7 +339,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
     <div className="composer-line">
       <input ref={fileInput} hidden type="file" multiple accept="image/*,application/pdf,.txt,.md,.csv,.doc,.docx" onChange={(event) => { addFiles(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
       <button type="button" className="icon-button composer-plus" aria-label="Attach files" onClick={() => fileInput.current?.click()}><Plus size={23} /></button>
-      <textarea ref={composerInput} rows={1} value={text} placeholder={copy.ask} className="composer-input" enterKeyHint="send" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onBeforeInput={(event) => { const inputEvent = event.nativeEvent as InputEvent; const isReturn = inputEvent.inputType === "insertLineBreak" || inputEvent.inputType === "insertParagraph" || inputEvent.data === "\n"; if (!isReturn || inputEvent.isComposing || !window.matchMedia("(max-width: 760px)").matches) return; event.preventDefault(); submitMobileReturn(); }} onKeyDown={(event) => { const firstMatch = commandMatches[0]; if (firstMatch && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && commandToken !== firstMatch.value) { event.preventDefault(); completeCommand(firstMatch.value); return; } if ((settings.sendWithEnter || window.matchMedia("(max-width: 760px)").matches) && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
+      <textarea ref={composerInput} rows={1} value={text} placeholder={copy.ask} className="composer-input" enterKeyHint="enter" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { const firstMatch = commandMatches[0]; if (firstMatch && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && commandToken !== firstMatch.value) { event.preventDefault(); completeCommand(firstMatch.value); return; } if (settings.sendWithEnter && !window.matchMedia("(max-width: 760px)").matches && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
       <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""}`} ref={modelMenuRef}>
         <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => setModelOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{providerEmoji(activeProvider)}</span><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
         {modelOpen && <div className="model-menu composer-model-menu"><ModelMenuOptions settings={settings} onChange={onSettingsChange} onClose={() => setModelOpen(false)} /></div>}
