@@ -48,7 +48,7 @@ export function loadSyncConfig(): SyncConfig {
 }
 
 export function saveSyncConfig(config: SyncConfig) { localStorage.setItem(CONFIG_KEY, JSON.stringify(config)); }
-export function isSyncConfigured(config: SyncConfig) { return Boolean(config.endpoint && config.username && config.password && config.passphraseInitialized); }
+export function isSyncConfigured(config: SyncConfig) { return Boolean(config.endpoint && config.username && config.passphraseInitialized); }
 
 /** Reads raw SYNC_CONFIG JSON or the optional ===SYNC_CONFIG_*=== wrapper. */
 export function parseSyncConfig(value: string): Pick<SyncConfig, "endpoint" | "username" | "password" | "deviceName" | "includeKeys"> {
@@ -508,7 +508,7 @@ export async function inspectWebDavSync({ config, data, settings }: { config: Sy
 
 /** Checks the endpoint, credentials, metadata and one encrypted record without writing anything. */
 export async function verifyWebDavSync(config: SyncConfig): Promise<SyncVerification> {
-  if (!config.endpoint.trim() || !config.username || !config.password) throw new Error("Enter the WebDAV endpoint, username, and password first.");
+  if (!config.endpoint.trim() || !config.username) throw new Error("Enter the WebDAV endpoint and username first.");
   let entries: string[];
   try { entries = await listEntries(config); }
   catch (error) {
@@ -530,7 +530,7 @@ export async function verifyWebDavSync(config: SyncConfig): Promise<SyncVerifica
 
 /** Verifies endpoint credentials without trying to decrypt an existing sync. */
 export async function inspectWebDavTarget(config: SyncConfig): Promise<SyncTargetInspection> {
-  if (!config.endpoint.trim() || !config.username || !config.password) throw new Error("Enter the WebDAV endpoint, username, and password first.");
+  if (!config.endpoint.trim() || !config.username) throw new Error("Enter the WebDAV endpoint and username first.");
   let entries: string[];
   try { entries = await listEntries(config); }
   catch (error) {
