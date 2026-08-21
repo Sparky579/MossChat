@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from "dexie";
 import { strToU8, zipSync } from "fflate";
+import { randomUuid } from "./id";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderKind, ProviderSettings, SavedAttachment, SavedMessage, ThinkingLevel } from "./types";
 
 const DATA_KEY = "ai-chat.local.data.v1";
@@ -376,7 +377,7 @@ export async function markManualBackup(): Promise<void> {
 }
 
 export function newId(prefix: string): string {
-  return `${prefix}_${crypto.randomUUID?.() ?? `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
+  return `${prefix}_${randomUuid()}`;
 }
 
 export function download(filename: string, content: BlobPart, type: string): void {

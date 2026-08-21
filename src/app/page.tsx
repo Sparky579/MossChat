@@ -450,7 +450,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
   }, [chat.messages, clearConversation, compactConversation, onOpenPromptSettings, run]);
 
   useEffect(() => {
-    const pending = chat.messages.at(-1);
+    const pending = chat.messages[chat.messages.length - 1];
     const pendingStatus = pending?.status;
     if (autoRunRef.current === chat.id || pending?.role !== "user" || !pendingStatus?.autoRun) return;
     // Delay an automatic Notebook run until React’s development effect replay is
@@ -1165,7 +1165,7 @@ export default function Home() {
   const syncReady = isSyncConfigured(syncConfig);
   const hasStreamingMessage = data.chats.some((chat) => chat.messages.some((message) => Boolean(message.status?.running)));
   const syncSignature = useMemo(() => JSON.stringify({
-    chats: data.chats.map((chat) => [chat.id, chat.updatedAt, chat.messages.length, chat.messages.at(-1)?.id]),
+    chats: data.chats.map((chat) => [chat.id, chat.updatedAt, chat.messages.length, chat.messages[chat.messages.length - 1]?.id]),
     notebooks: data.notebooks.map((notebook) => [notebook.id, notebook.updatedAt]),
     settings,
   }), [data, settings]);

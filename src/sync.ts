@@ -1,4 +1,5 @@
 import type { AppData, AppSettings, Chat, Notebook, SavedAttachment, SavedMessage } from "./types";
+import { randomUuid } from "./id";
 
 const CONFIG_KEY = "mosschat.webdav.sync.v1";
 const INDEX_PREFIX = "mosschat.webdav.sync.index.v2";
@@ -38,13 +39,13 @@ export type SyncInspection = { state: "empty" | "ready" | "missing-meta"; server
 export type SyncVerification = { state: "empty" | "ready"; serverId: string | null; records: number };
 export type SyncTargetInspection = { hasExistingData: boolean; records: number };
 
-export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", passphraseInitialized: false, deviceId: crypto.randomUUID(), deviceName: "", includeKeys: false });
+export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", passphraseInitialized: false, deviceId: randomUuid(), deviceName: "", includeKeys: false });
 
 export function loadSyncConfig(): SyncConfig {
   try {
     const parsed = JSON.parse(localStorage.getItem(CONFIG_KEY) ?? "{}") as Partial<SyncConfig>;
     const passphrase = String(parsed.passphrase ?? "");
-    return { ...emptySyncConfig(), ...parsed, endpoint: String(parsed.endpoint ?? "").trim(), username: String(parsed.username ?? ""), password: String(parsed.password ?? ""), passphrase, passphraseInitialized: parsed.passphraseInitialized === true || Boolean(passphrase), deviceId: String(parsed.deviceId ?? crypto.randomUUID()), deviceName: String(parsed.deviceName ?? ""), includeKeys: parsed.includeKeys === true };
+    return { ...emptySyncConfig(), ...parsed, endpoint: String(parsed.endpoint ?? "").trim(), username: String(parsed.username ?? ""), password: String(parsed.password ?? ""), passphrase, passphraseInitialized: parsed.passphraseInitialized === true || Boolean(passphrase), deviceId: String(parsed.deviceId ?? randomUuid()), deviceName: String(parsed.deviceName ?? ""), includeKeys: parsed.includeKeys === true };
   } catch { return emptySyncConfig(); }
 }
 
@@ -159,7 +160,7 @@ async function request(config: SyncConfig, path: string, init: RequestInit = {})
   return fetch(`${normalizedEndpoint(config.endpoint)}${path}`, { ...init, headers: { Authorization: authorization(config), ...(init.headers ?? {}) }, credentials: "omit" });
 }
 
-function newServerId() { return `srv_${crypto.randomUUID().replace(/-/g, "")}`; }
+function newServerId() { return `srv_${randomUuid().replace(/-/g, "")}`; }
 
 async function putMeta(config: SyncConfig, meta: SyncMeta) {
   const response = await request(config, META_FILE, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(meta) });
@@ -360,7 +361,10 @@ async function listEntries(config: SyncConfig) {
   const document = new DOMParser().parseFromString(xml, "application/xml");
   const root = new URL(normalizedEndpoint(config.endpoint));
   return Array.from(document.querySelectorAll("response href")).map((node) => node.textContent ?? "").map((href) => {
-    try { return decodeURIComponent(new URL(href, root).pathname.split("/").filter(Boolean).at(-1) ?? ""); } catch { return ""; }
+    try {
+      const segments = new URL(href, root).pathname.split("/").filter(Boolean);
+      return decodeURIComponent(segments[segments.length - 1] ?? "");
+    } catch { return ""; }
   }).filter(Boolean);
 }
 
