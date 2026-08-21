@@ -251,6 +251,38 @@ button { color: inherit; }
 .data-safety { margin-top: 22px; padding-top: 4px; border-top: 1px solid var(--line); }.data-safety h4 { margin: 14px 0 7px; font-size: 14px; }.data-safety dl { margin: 0; }.data-safety dl > div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px; }.data-safety dt { color: var(--muted); }.data-safety dd { margin: 0; overflow-wrap: anywhere; text-align: right; }.data-safety .provider-actions { flex-wrap: wrap; margin: 14px 0 0; }
 .storage-warning { color: #b3261e !important; font-weight: 600; }
 
+/* Provider JSON transfer */
+.provider-actions { flex-wrap: wrap; }
+.provider-actions button { display: inline-flex; align-items: center; gap: 5px; }
+.provider-json-backdrop { z-index: 60; }
+.provider-json-dialog { display: flex; width: min(620px, 100%); max-height: min(720px, calc(100dvh - 36px)); flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: 20px; background: var(--bg); box-shadow: 0 14px 48px rgba(0,0,0,.25); }
+.provider-json-dialog > header { display: flex; align-items: center; justify-content: space-between; padding: 17px 20px 13px; border-bottom: 1px solid var(--line); }
+.provider-json-dialog > header > div { display: flex; align-items: center; gap: 8px; color: #198754; }
+.provider-json-dialog h2 { margin: 0; color: var(--text); font-size: 20px; }
+.provider-json-body { display: grid; min-height: 0; gap: 12px; overflow: auto; padding: 19px 20px; }
+.provider-json-body > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.provider-json-body > textarea { width: 100%; min-height: 220px; padding: 11px; border: 1px solid var(--line); border-radius: 10px; outline-color: #198754; color: var(--text); background: var(--surface); font: 12px/1.5 var(--font-mono), monospace; resize: vertical; }
+.provider-json-error { color: #b3261e !important; }
+.provider-json-preview { display: grid; gap: 8px; padding: 11px; border: 1px solid #b7dfc4; border-radius: 11px; background: #f0f9f3; }
+.provider-json-count { color: #157347 !important; font-size: 13px !important; font-weight: 600; }
+.provider-json-preview > div { display: grid; gap: 5px; }
+.provider-json-preview article, .provider-json-export-list label { display: grid; min-width: 0; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
+.provider-json-preview article > span, .provider-json-export-list label > span { font-size: 18px; }
+.provider-json-preview article > div, .provider-json-export-list label > div { display: grid; min-width: 0; gap: 2px; }
+.provider-json-preview strong, .provider-json-export-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.provider-json-preview small, .provider-json-export-list small { overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.provider-json-key-warning { color: #8b5a00 !important; }
+.provider-json-select-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.provider-json-select-actions button { min-height: 30px; padding: 0 10px; border: 1px solid var(--line); border-radius: 15px; color: var(--text); background: var(--surface); cursor: pointer; font-size: 12px; }
+.provider-json-select-actions small { color: var(--muted); font-size: 12px; }
+.provider-json-export-list { display: grid; gap: 6px; }
+.provider-json-export-list label { grid-template-columns: auto auto minmax(0, 1fr); cursor: pointer; }
+.provider-json-export-list input { width: 16px; height: 16px; margin: 0; accent-color: #198754; }
+.provider-json-dialog footer { display: flex; justify-content: flex-end; gap: 7px; padding: 12px 18px; border-top: 1px solid var(--line); }
+.provider-json-dialog footer button { min-height: 34px; padding: 0 13px; border: 0; border-radius: 17px; color: var(--muted); background: transparent; cursor: pointer; }
+.provider-json-dialog footer .text-button { color: #fff; background: var(--deep-blue); }
+.provider-json-dialog footer .text-button:disabled { cursor: not-allowed; opacity: .45; }
+
 @keyframes moss-pop-in { from { opacity: 0; transform: translateY(-5px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes moss-rise-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @keyframes moss-fade-in { from { opacity: 0; } to { opacity: 1; } }

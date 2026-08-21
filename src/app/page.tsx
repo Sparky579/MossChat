@@ -43,7 +43,7 @@ import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useL
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, SYNC_CONFIGURATION_CHANGED_ERROR, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
-import type { AppData, AppSettings, Chat, Notebook, NotebookPromptMode, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
+import type { AppData, AppSettings, Chat, Notebook, NotebookPromptMode, PromptPreset, ProviderId, ProviderKind, ProviderSettings, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
 
@@ -104,6 +104,46 @@ const orderedProviders = (settings: AppSettings) => settings.providerOrder
 
 const providerEmoji = (provider: AppSettings["providers"][string] | undefined) => provider?.emoji?.trim() || "🤖";
 const COMMON_PROVIDER_EMOJIS = ["🤖", "🧠", "✨", "🔮", "⚡", "🚀", "🦙", "🐱", "🐳", "🦉", "🧩", "🌿"];
+
+type ProviderJsonSource = Record<string, unknown>;
+
+function readProviderJson(value: string): ProviderSettings[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { throw new Error("JSON 格式不正确。"); }
+  const object = (candidate: unknown): candidate is ProviderJsonSource => Boolean(candidate) && typeof candidate === "object" && !Array.isArray(candidate);
+  const candidates = Array.isArray(parsed)
+    ? parsed
+    : object(parsed) && Array.isArray(parsed.providers)
+      ? parsed.providers
+      : object(parsed) && object(parsed.providers)
+        ? Object.values(parsed.providers)
+        : [parsed];
+  if (!candidates.length) throw new Error("至少需要一个渠道商配置。");
+  if (candidates.length > 30) throw new Error("一次最多导入 30 个渠道商。");
+  return candidates.map((candidate, index) => {
+    if (!object(candidate)) throw new Error(`第 ${index + 1} 个渠道商必须是 JSON 对象。`);
+    const text = (keys: string[], label: string, required = false) => {
+      const value = keys.map((key) => candidate[key]).find((item) => item !== undefined);
+      if (value === undefined && !required) return "";
+      if (typeof value !== "string") throw new Error(`第 ${index + 1} 个渠道商的 ${label} 必须是文本。`);
+      const trimmed = value.trim();
+      if (required && !trimmed) throw new Error(`第 ${index + 1} 个渠道商缺少 ${label}。`);
+      return trimmed;
+    };
+    const name = text(["name", "providerName"], "name", true).slice(0, 120);
+    const kindValue = text(["kind", "protocol"], "kind", true);
+    if (!(["openai", "anthropic", "google"] as const).includes(kindValue as ProviderKind)) throw new Error(`第 ${index + 1} 个渠道商的 kind 必须是 openai、anthropic 或 google。`);
+    const baseUrl = text(["baseUrl", "endpoint"], "baseUrl", true);
+    const apiKey = text(["apiKey", "key"], "apiKey");
+    const emoji = text(["emoji"], "emoji").slice(0, 16) || "🤖";
+    const model = text(["model"], "model");
+    const rawModels = candidate.models;
+    if (rawModels !== undefined && (!Array.isArray(rawModels) || rawModels.some((item) => typeof item !== "string"))) throw new Error(`第 ${index + 1} 个渠道商的 models 必须是文本数组。`);
+    const models = [...new Set([...(rawModels as string[] | undefined ?? []), model].map((item) => item.trim()).filter(Boolean))];
+    if (!models.length) throw new Error(`第 ${index + 1} 个渠道商至少需要一个 model 或 models。`);
+    return { name, kind: kindValue as ProviderKind, apiKey, baseUrl, model: model && models.includes(model) ? model : models[0], models, emoji };
+  });
+}
 
 const combinedNotebookPrompt = (chat: Chat | null, notebook: Notebook | undefined, globalPrompt: string) => {
   if (chat?.systemPrompt !== undefined) return chat.systemPrompt;
@@ -763,11 +803,43 @@ function PromptSettingsDialog({ chat, notebook, initialScope, settings, onChange
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="prompt-dialog" role="dialog" aria-modal="true" aria-label={locale === "zh" ? "Prompt 设置" : "Prompt settings"} onMouseDown={(event) => event.stopPropagation()}><header><div><TextQuote size={20} /><h2>{locale === "zh" ? "Prompts" : "Prompts"}</h2></div><div className="prompt-header-actions"><select value={scope} aria-label={locale === "zh" ? "编辑目标" : "Editing target"} onChange={(event) => setScope(event.target.value as PromptScope)}>{scopes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><button type="button" className="icon-button" onClick={onClose} aria-label={locale === "zh" ? "关闭" : "Close"}><X /></button></div></header><div className="prompt-dialog-body"><section><h3>{scope === "global" ? (locale === "zh" ? "全局 System Prompt" : "Global system prompt") : scope === "chat" ? (locale === "zh" ? "当前对话 System Prompt" : "Current chat system prompt") : (locale === "zh" ? "当前 Notebook Prompt" : "Current Notebook prompt")}</h3><p>{description}</p>{scope === "notebook" && <label className="prompt-mode-control"><span>{locale === "zh" ? "应用方式" : "Application mode"}</span><select value={notebookMode} onChange={(event) => setNotebookMode(event.target.value as NotebookPromptMode)}><option value="stack">{locale === "zh" ? "堆叠：全局 Prompt + Notebook Prompt" : "Stack: global + Notebook prompt"}</option><option value="replace">{locale === "zh" ? "覆盖：只使用 Notebook Prompt" : "Replace: Notebook prompt only"}</option></select></label>}<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={locale === "zh" ? "输入系统提示词…" : "Write a system prompt…"} rows={7} /><div className="prompt-dialog-actions"><button type="button" onClick={onClose}>{locale === "zh" ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={save}>{locale === "zh" ? "保存" : "Save"}</button></div></section><section className="prompt-presets"><div><h3>{locale === "zh" ? "预设提示词" : "Prompt presets"}</h3><p>{locale === "zh" ? "选择后会填入当前编辑目标，可再修改后保存。" : "Choose one to fill the current target, then edit or save it."}</p></div>{settings.promptPresets.length ? <div className="prompt-preset-list">{settings.promptPresets.map((preset) => <article key={preset.id}><div><strong>{preset.title}</strong><small>{preset.content}</small></div><button type="button" onClick={() => setPrompt(preset.content)}>{locale === "zh" ? "使用" : "Use"}</button><button type="button" className="icon-button" title={locale === "zh" ? "删除预设" : "Delete preset"} onClick={() => onChange({ ...settings, promptPresets: settings.promptPresets.filter((item) => item !== preset) })}><Trash2 size={15} /></button></article>)}</div> : <p className="prompt-empty">{locale === "zh" ? "还没有预设。可在下面保存常用提示词。" : "No presets yet. Save a frequently used prompt below."}</p>}<div className="new-preset"><input value={presetTitle} maxLength={80} placeholder={locale === "zh" ? "预设名称" : "Preset name"} onChange={(event) => setPresetTitle(event.target.value)} /><textarea value={presetContent} placeholder={locale === "zh" ? "预设内容" : "Preset content"} rows={4} onChange={(event) => setPresetContent(event.target.value)} /><button type="button" onClick={addPreset}><Plus size={15} />{locale === "zh" ? "保存为预设" : "Save preset"}</button></div></section></div></section></div>;
 }
 
+function ProviderJsonDialog({ mode, providers, onImport, onClose }: { mode: "import" | "export"; providers: ReadonlyArray<readonly [ProviderId, ProviderSettings]>; onImport: (providers: ProviderSettings[]) => void; onClose: () => void }) {
+  const locale = useContext(LocaleContext);
+  const isChinese = locale === "zh";
+  const { copied, copyText, copiedLabel } = useCopyFeedback();
+  const [source, setSource] = useState("");
+  const [preview, setPreview] = useState<ProviderSettings[]>([]);
+  const [error, setError] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<ProviderId>>(() => new Set(providers.map(([id]) => id)));
+  const updateSource = (value: string) => {
+    setSource(value);
+    if (!value.trim()) { setPreview([]); setError(""); return; }
+    try { setPreview(readProviderJson(value)); setError(""); }
+    catch (cause) { setPreview([]); setError(cause instanceof Error ? cause.message : "JSON 无法读取。"); }
+  };
+  const selected = providers.filter(([id]) => selectedIds.has(id));
+  const exportJson = JSON.stringify({ version: 1, providers: selected.map(([, provider]) => provider) }, null, 2);
+  const toggleSelected = (id: ProviderId) => setSelectedIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
+  const allSelected = selected.length === providers.length;
+  const example = JSON.stringify({ name: "My provider", emoji: "✨", kind: "openai", apiKey: "", baseUrl: "https://api.example.com/v1", model: "example-model", models: ["example-model"] }, null, 2);
+  return <div className="modal-backdrop provider-json-backdrop" onMouseDown={onClose}><section className="provider-json-dialog" role="dialog" aria-modal="true" aria-label={mode === "import" ? (isChinese ? "通过 JSON 添加渠道商" : "Add providers by JSON") : (isChinese ? "复制渠道商 JSON" : "Copy provider JSON")} onMouseDown={(event) => event.stopPropagation()}>
+    <header><div><Upload size={20} /><h2>{mode === "import" ? (isChinese ? "通过 JSON 添加渠道商" : "Add providers by JSON") : (isChinese ? "复制渠道商 JSON" : "Copy provider JSON")}</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label={isChinese ? "关闭" : "Close"}><X /></button></header>
+    {mode === "import" ? <div className="provider-json-body"><p>{isChinese ? "可粘贴单个对象、对象数组，或“复制渠道商 JSON”生成的 providers 区块。导入只会新增，不会覆盖当前渠道商。" : "Paste one object, an array, or a providers block created here. Import adds new providers and never overwrites existing ones."}</p><textarea autoFocus value={source} onChange={(event) => updateSource(event.target.value)} spellCheck={false} placeholder={example} aria-label={isChinese ? "渠道商 JSON" : "Provider JSON"} />{error && <p className="provider-json-error" role="alert">{error}</p>}{preview.length > 0 && <section className="provider-json-preview"><p className="provider-json-count">{preview.length > 1 ? (isChinese ? <>即将加入 <strong>{preview.length}</strong> 个渠道商</> : <>You are about to add <strong>{preview.length}</strong> providers</>) : (isChinese ? "即将加入 1 个渠道商" : "You are about to add 1 provider")}</p><div>{preview.map((provider, index) => <article key={`${provider.name}:${index}`}><span>{providerEmoji(provider)}</span><div><strong>{provider.name}</strong><small>{provider.kind} · {provider.model}</small></div></article>)}</div></section>}<p className="provider-json-key-warning">{isChinese ? "导入内容可能含 API key；请只粘贴来自可信来源的配置。" : "Imported JSON may contain API keys. Only paste configuration from a trusted source."}</p></div> : <div className="provider-json-body"><p>{isChinese ? "选择要复制的一个或多个渠道商。复制内容包含 API key、端点、模型和 Emoji，请谨慎分享。" : "Select one or more providers to copy. The JSON includes API keys, endpoints, models, and emoji, so share it carefully."}</p><div className="provider-json-select-actions"><button type="button" onClick={() => setSelectedIds(allSelected ? new Set() : new Set(providers.map(([id]) => id)))}>{allSelected ? (isChinese ? "取消全选" : "Clear all") : (isChinese ? "全选" : "Select all")}</button><small>{isChinese ? `已选择 ${selected.length} 个` : `${selected.length} selected`}</small></div><div className="provider-json-export-list">{providers.map(([id, provider]) => <label key={id}><input type="checkbox" checked={selectedIds.has(id)} onChange={() => toggleSelected(id)} /><span>{providerEmoji(provider)}</span><div><strong>{provider.name}</strong><small>{provider.baseUrl || "—"}</small></div></label>)}</div></div>}
+    <footer><button type="button" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button>{mode === "import" ? <button type="button" className="text-button" disabled={!preview.length} onClick={() => { onImport(preview); onClose(); }}>{preview.length > 1 ? (isChinese ? `加入 ${preview.length} 个渠道商` : `Add ${preview.length} providers`) : (isChinese ? "加入渠道商" : "Add provider")}</button> : <button type="button" className="text-button" disabled={!selected.length} onClick={() => void copyText(exportJson, "provider-json")}>{copied === "provider-json" ? copiedLabel : (isChinese ? `复制 ${selected.length || ""} 个渠道商 JSON` : `Copy ${selected.length || ""} provider JSON`)}</button>}</footer>
+  </section></div>;
+}
+
 function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersistent, onChooseAutoBackup }: { settings: AppSettings; safety: StorageSafetyStatus | null; onChange: (settings: AppSettings) => void; onClose: () => void; onRequestPersistent: () => void; onChooseAutoBackup: () => void }) {
   const copy = useCopy();
   const [tab, setTab] = useState<"models" | "behavior" | "tools" | "privacy">("models");
   const [editingProviderIds, setEditingProviderIds] = useState<Set<ProviderId>>(() => new Set());
   const [emojiPickerProviderId, setEmojiPickerProviderId] = useState<ProviderId | null>(null);
+  const [providerJsonMode, setProviderJsonMode] = useState<"import" | "export" | null>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
   const isEditingProvider = (id: ProviderId) => editingProviderIds.has(id);
   const setProviderEditing = (id: ProviderId, editing: boolean) => setEditingProviderIds((current) => {
@@ -827,6 +899,19 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     onChange({ ...settings, providers: { ...settings.providers, [id]: { name: "New provider", kind: "openai", apiKey: "", baseUrl: "", model: "", models: [""], emoji: "🤖" } }, providerOrder: [id, ...settings.providerOrder] });
     setProviderEditing(id, true);
   };
+  const duplicateProvider = (id: ProviderId) => {
+    const provider = settings.providers[id];
+    if (!provider) return;
+    const copyId = newId("provider");
+    const name = settings.language === "zh" ? `${provider.name} 的副本` : `${provider.name} copy`;
+    onChange({ ...settings, providers: { ...settings.providers, [copyId]: { ...provider, name: name.slice(0, 120), models: [...provider.models] } }, providerOrder: [copyId, ...settings.providerOrder] });
+    setProviderEditing(copyId, true);
+  };
+  const importProviders = (incoming: ProviderSettings[]) => {
+    const entries: [ProviderId, ProviderSettings][] = incoming.map((provider) => [newId("provider"), { ...provider, models: [...provider.models] }]);
+    onChange({ ...settings, providers: { ...settings.providers, ...Object.fromEntries(entries) }, providerOrder: [...entries.map(([id]) => id), ...settings.providerOrder] });
+    setEditingProviderIds((current) => new Set([...current, ...entries.map(([id]) => id)]));
+  };
   const moveProvider = (id: ProviderId, direction: -1 | 1) => {
     const index = settings.providerOrder.indexOf(id);
     const target = index + direction;
@@ -848,12 +933,12 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
       <div className="settings-content">
         {tab === "models" && <>
           <h3>{copy.apiTitle}</h3><p className="muted">{copy.apiDetail}</p>
-          <div className="provider-actions"><button type="button" onClick={addProvider}>+ Add provider</button></div>
+          <div className="provider-actions"><button type="button" onClick={addProvider}><Plus size={15} />{settings.language === "zh" ? "添加渠道商" : "Add provider"}</button><button type="button" onClick={() => setProviderJsonMode("import")}><Upload size={15} />{settings.language === "zh" ? "通过 JSON 添加" : "Add by JSON"}</button><button type="button" onClick={() => setProviderJsonMode("export")}><Copy size={15} />{settings.language === "zh" ? "复制渠道商 JSON" : "Copy provider JSON"}</button></div>
           {orderedProviders(settings).map(([id, provider], index) => {
             const editing = isEditingProvider(id);
             return <fieldset key={id} className={editing ? "is-editing" : ""}>
               <legend>{provider.name}</legend>
-              <div className="provider-title-actions"><div className="provider-order-actions"><span>{settings.language === "zh" ? "排序" : "Order"}</span><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button></div><div className="provider-row-actions"><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div></div>
+              <div className="provider-title-actions"><div className="provider-order-actions"><span>{settings.language === "zh" ? "排序" : "Order"}</span><button type="button" disabled={!index} onClick={() => moveProvider(id, -1)} aria-label="Move provider up"><ArrowUp size={15} /></button><button type="button" disabled={index === settings.providerOrder.length - 1} onClick={() => moveProvider(id, 1)} aria-label="Move provider down"><ArrowDown size={15} /></button></div><div className="provider-row-actions"><button type="button" onClick={() => duplicateProvider(id)} aria-label={settings.language === "zh" ? "复制为新渠道商" : "Copy as new provider"} title={settings.language === "zh" ? "复制为新渠道商" : "Copy as new provider"}><Copy size={15} /></button><button type="button" disabled={settings.providerOrder.length <= 1} onClick={() => removeProvider(id)} aria-label="Delete provider"><Trash2 size={15} /></button></div></div>
               <div className="provider-emoji-control" ref={emojiPickerProviderId === id ? emojiPickerRef : undefined}><span>Emoji</span><input disabled={!editing} aria-label={settings.language === "zh" ? `${provider.name} 的 Emoji` : `Emoji for ${provider.name}`} value={providerEmoji(provider)} maxLength={16} onChange={(event) => updateProviderEmoji(id, event.target.value)} onBlur={(event) => { if (!event.currentTarget.value.trim()) updateProviderEmoji(id, "🤖"); }} /><button type="button" disabled={!editing} onClick={() => setEmojiPickerProviderId((current) => current === id ? null : id)}>{settings.language === "zh" ? "常用 Emoji" : "Pick emoji"}</button>{emojiPickerProviderId === id && <div className="provider-emoji-picker" role="dialog" aria-label={settings.language === "zh" ? "选择渠道商 Emoji" : "Choose provider emoji"}>{COMMON_PROVIDER_EMOJIS.map((emoji) => <button type="button" key={emoji} className={providerEmoji(provider) === emoji ? "active" : ""} title={emoji} onClick={() => { updateProviderEmoji(id, emoji); setEmojiPickerProviderId(null); }}>{emoji}</button>)}</div>}</div>
               <div className="provider-presets"><span>{settings.language === "zh" ? "端点预设" : "Endpoint preset"}</span><button type="button" className="provider-edit-toggle" onClick={() => setProviderEditing(id, !editing)}><Pencil size={13} />{editing ? (settings.language === "zh" ? "完成编辑" : "Done editing") : (settings.language === "zh" ? "编辑配置" : "Edit provider")}</button>{(Object.keys(PROVIDER_PRESETS) as ProviderPresetId[]).map((presetId) => <button type="button" disabled={!editing} key={presetId} className={provider.baseUrl === PROVIDER_PRESETS[presetId].baseUrl ? "active" : ""} onClick={() => applyProviderPreset(id, presetId)}>{PROVIDER_PRESETS[presetId].label}</button>)}</div>
               {!editing && <p className="provider-saved-endpoint">{settings.language === "zh" ? "已保存端点" : "Saved endpoint"}<code>{provider.baseUrl || "—"}</code></p>}
@@ -871,7 +956,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
       </div>
     </div>
     <footer><button className="text-button" onClick={onClose}>{copy.done}</button></footer>
-  </section></div>;
+  </section>{providerJsonMode && <ProviderJsonDialog mode={providerJsonMode} providers={orderedProviders(settings)} onImport={importProviders} onClose={() => setProviderJsonMode(null)} />}</div>;
 }
 
 function FeedbackDialog({ target, onClose }: { target: FeedbackTarget | null; onClose: () => void }) {
