@@ -45,7 +45,7 @@ import { chatSearchText, chatToMarkdown, compactContext, estimatedTokens, fallba
 import { parseProviderJson, serializeProviderJson } from "@/provider-json";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, settingsWithoutImportedKeys, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, SYNC_CONFIGURATION_CHANGED_ERROR, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
-import type { AppData, AppSettings, Chat, Notebook, NotebookPromptMode, PromptPreset, ProviderId, ProviderKind, ProviderSettings, SavedMessage, ThinkingLevel } from "@/types";
+import { DEFAULT_THINKING_LEVELS, modelSettingsKey, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type NotebookPromptMode, type PromptPreset, type ProviderId, type ProviderKind, type ProviderSettings, type SavedMessage, type ThinkingLevel } from "@/types";
 import { useDismissOnOutside } from "@/use-dismiss-on-outside";
 
 type Locale = "en" | "zh";
@@ -107,6 +107,87 @@ const orderedProviders = (settings: AppSettings) => settings.providerOrder
 
 const providerEmoji = (provider: AppSettings["providers"][string] | undefined) => provider?.emoji?.trim() || "🤖";
 const COMMON_PROVIDER_EMOJIS = ["🤖", "🧠", "✨", "🔮", "⚡", "🚀", "🦙", "🐱", "🐳", "🦉", "🧩", "🌿"];
+
+type ModelEntry = ModelDisplayItem & { provider: ProviderSettings };
+
+const allModelEntries = (settings: AppSettings): ModelEntry[] => orderedProviders(settings).flatMap(([providerId, provider]) => [...new Set(provider.models.map((model) => model.trim()).filter(Boolean))]
+  .map((model) => ({ providerId, model, provider })));
+
+const defaultModelThinking = (settings: AppSettings): ModelThinkingSettings => ({
+  defaultThinkingLevel: settings.thinkingLevel || "off",
+  availableThinkingLevels: [...DEFAULT_THINKING_LEVELS],
+});
+
+function modelThinkingFor(settings: AppSettings, providerId: ProviderId, model: string): ModelThinkingSettings {
+  const fallback = defaultModelThinking(settings);
+  const saved = settings.modelThinking[modelSettingsKey(providerId, model)];
+  const availableThinkingLevels = [...new Set((saved?.availableThinkingLevels ?? fallback.availableThinkingLevels).map((level) => level.trim()).filter(Boolean))];
+  const defaultThinkingLevel = saved?.defaultThinkingLevel?.trim() || fallback.defaultThinkingLevel;
+  if (!availableThinkingLevels.length) availableThinkingLevels.push(...DEFAULT_THINKING_LEVELS);
+  if (!availableThinkingLevels.includes(defaultThinkingLevel)) availableThinkingLevels.unshift(defaultThinkingLevel);
+  return { defaultThinkingLevel, availableThinkingLevels };
+}
+
+function withModelThinking(settings: AppSettings, providerId: ProviderId, model: string, preference: ModelThinkingSettings): AppSettings {
+  const availableThinkingLevels = [...new Set(preference.availableThinkingLevels.map((level) => level.trim().slice(0, 80)).filter(Boolean))];
+  if (!availableThinkingLevels.length) availableThinkingLevels.push("off");
+  const defaultThinkingLevel = availableThinkingLevels.includes(preference.defaultThinkingLevel)
+    ? preference.defaultThinkingLevel
+    : availableThinkingLevels[0];
+  const active = settings.activeProvider === providerId && settings.providers[providerId]?.model === model;
+  return {
+    ...settings,
+    thinkingLevel: active ? defaultThinkingLevel : settings.thinkingLevel,
+    modelThinking: {
+      ...settings.modelThinking,
+      [modelSettingsKey(providerId, model)]: { defaultThinkingLevel, availableThinkingLevels },
+    },
+  };
+}
+
+function selectModel(settings: AppSettings, providerId: ProviderId, model: string): AppSettings {
+  const provider = settings.providers[providerId];
+  if (!provider) return settings;
+  return {
+    ...settings,
+    activeProvider: providerId,
+    providers: { ...settings.providers, [providerId]: { ...provider, model } },
+    thinkingLevel: modelThinkingFor(settings, providerId, model).defaultThinkingLevel,
+  };
+}
+
+function selectProviderDefaultModel(settings: AppSettings, providerId: ProviderId, model: string): AppSettings {
+  const provider = settings.providers[providerId];
+  if (!provider) return settings;
+  return {
+    ...settings,
+    providers: { ...settings.providers, [providerId]: { ...provider, model } },
+    thinkingLevel: settings.activeProvider === providerId ? modelThinkingFor(settings, providerId, model).defaultThinkingLevel : settings.thinkingLevel,
+  };
+}
+
+function modelMenuGroups(settings: AppSettings) {
+  const entries = allModelEntries(settings);
+  const byKey = new Map(entries.map((entry) => [modelSettingsKey(entry.providerId, entry.model), entry]));
+  const seen = new Set<string>();
+  const featured = settings.modelDisplayOrder.flatMap((item) => {
+    const key = modelSettingsKey(item.providerId, item.model);
+    const entry = byKey.get(key);
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return entry ? [entry] : [];
+  });
+  const featuredKeys = new Set(featured.map((entry) => modelSettingsKey(entry.providerId, entry.model)));
+  return { featured, others: entries.filter((entry) => !featuredKeys.has(modelSettingsKey(entry.providerId, entry.model))) };
+}
+
+const thinkingLevelLabel = (level: ThinkingLevel, locale: Locale) => ({
+  off: locale === "zh" ? "关闭" : "Off",
+  low: locale === "zh" ? "低" : "Low",
+  medium: locale === "zh" ? "中" : "Medium",
+  high: locale === "zh" ? "高" : "High",
+  custom: locale === "zh" ? "自定义" : "Custom",
+}[level] ?? level);
 
 const combinedNotebookPrompt = (chat: Chat | null, notebook: Notebook | undefined, globalPrompt: string) => {
   if (chat?.systemPrompt !== undefined) return chat.systemPrompt;
@@ -501,8 +582,11 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
 
 function ModelMenuOptions({ settings, onChange, onClose }: { settings: AppSettings; onChange: (next: AppSettings) => void; onClose: () => void }) {
   const copy = useCopy();
+  const { featured, others } = modelMenuGroups(settings);
+  const option = (entry: ModelEntry) => <button key={`${entry.providerId}:${entry.model}`} type="button" className={entry.providerId === settings.activeProvider && entry.model === entry.provider.model ? "active" : ""} onClick={() => { onChange(selectModel(settings, entry.providerId, entry.model)); onClose(); }}><span className="model-menu-label"><i aria-hidden="true">{providerEmoji(entry.provider)}</i><span><strong>{entry.provider.name}</strong><small>{entry.model}</small></span></span>{entry.providerId === settings.activeProvider && entry.model === entry.provider.model && <Check size={16} />}</button>;
   return <>
-    {orderedProviders(settings).flatMap(([id, provider]) => provider.models.filter(Boolean).map((model) => <button key={`${id}:${model}`} type="button" className={id === settings.activeProvider && model === provider.model ? "active" : ""} onClick={() => { onChange({ ...settings, activeProvider: id, providers: { ...settings.providers, [id]: { ...provider, model } } }); onClose(); }}><span className="model-menu-label"><i aria-hidden="true">{providerEmoji(provider)}</i><span><strong>{provider.name}</strong><small>{model}</small></span></span>{id === settings.activeProvider && model === provider.model && <Check size={16} />}</button>))}
+    {featured.map(option)}
+    {others.length > 0 && <><div className="model-menu-section-label">{settings.language === "zh" ? "其他模型" : "Others"}</div>{others.map(option)}</>}
     <hr />
     <button type="button" onClick={() => { document.dispatchEvent(new CustomEvent("ai-chat:open-settings")); onClose(); }}><Settings size={16} />{copy.manageApi}</button>
   </>;
@@ -523,17 +607,17 @@ function ThinkingMenu({ settings, onChange }: { settings: AppSettings; onChange:
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const locale = useContext(LocaleContext);
-  const labelFor = (level: ThinkingLevel) => ({
-    off: locale === "zh" ? "思考：关闭" : "Thinking: Off",
-    low: locale === "zh" ? "思考：低" : "Thinking: Low",
-    medium: locale === "zh" ? "思考：中" : "Thinking: Medium",
-    high: locale === "zh" ? "思考：高" : "Thinking: High",
-    custom: locale === "zh" ? "思考：自定义" : "Thinking: Custom",
-  }[level] ?? (locale === "zh" ? `思考：${level}` : `Thinking: ${level}`));
-  const choices: ThinkingLevel[] = ["off", "low", "medium", "high", "custom"];
-  const customPreset = choices.includes(settings.thinkingLevel) ? "" : settings.thinkingLevel;
+  const activeProvider = settings.providers[settings.activeProvider] ?? orderedProviders(settings)[0]?.[1];
+  const activeModel = activeProvider?.model ?? "";
+  const preference = activeProvider ? modelThinkingFor(settings, settings.activeProvider, activeModel) : defaultModelThinking(settings);
+  const labelFor = (level: ThinkingLevel) => locale === "zh" ? `思考：${thinkingLevelLabel(level, locale)}` : `Thinking: ${thinkingLevelLabel(level, locale)}`;
+  const choose = (level: ThinkingLevel) => {
+    if (!activeProvider) return;
+    onChange(withModelThinking(settings, settings.activeProvider, activeModel, { ...preference, defaultThinkingLevel: level }));
+    setOpen(false);
+  };
   useDismissOnOutside(open, menuRef, () => setOpen(false));
-  return <div className="thinking-menu-wrap" ref={menuRef}><button type="button" className={`thinking-button ${settings.thinkingLevel !== "off" ? "active" : ""}`} title={locale === "zh" ? "调整思考等级" : "Adjust thinking level"} onClick={() => setOpen((current) => !current)}><Sparkles size={16} /><span>{labelFor(settings.thinkingLevel)}</span><ChevronDown size={15} /></button>{open && <div className="thinking-menu"><strong>{locale === "zh" ? "思考等级" : "Thinking level"}</strong>{choices.map((level) => <button key={level} type="button" className={settings.thinkingLevel === level ? "active" : ""} onClick={() => { onChange({ ...settings, thinkingLevel: level }); setOpen(false); }}>{labelFor(level)}</button>)}<label>{locale === "zh" ? "提供商预设值" : "Provider preset"}<input list="thinking-preset-values" value={customPreset} placeholder="e.g. xhigh" onChange={(event) => onChange({ ...settings, thinkingLevel: event.target.value.trim() || "off" })} /><datalist id="thinking-preset-values"><option value="minimal" /><option value="xhigh" /></datalist></label>{settings.thinkingLevel === "custom" && <label>{locale === "zh" ? "Token 预算" : "Token budget"}<input type="number" min="0" step="128" value={settings.thinkingBudget} onFocus={(event) => event.currentTarget.select()} onChange={(event) => onChange({ ...settings, thinkingBudget: Number(event.target.value) || 0 })} /></label>}<small>{locale === "zh" ? "原生预设会原样传给兼容提供商，并在下一条请求生效" : "Provider presets are passed through to compatible APIs on the next request"}</small></div>}</div>;
+  return <div className="thinking-menu-wrap" ref={menuRef}><button type="button" className={`thinking-button ${settings.thinkingLevel !== "off" ? "active" : ""}`} title={locale === "zh" ? "调整思考等级" : "Adjust thinking level"} onClick={() => setOpen((current) => !current)}><Sparkles size={16} /><span>{labelFor(settings.thinkingLevel)}</span><ChevronDown size={15} /></button>{open && <div className="thinking-menu"><strong>{locale === "zh" ? "思考等级" : "Thinking level"}</strong>{preference.availableThinkingLevels.map((level) => <button key={level} type="button" className={settings.thinkingLevel === level ? "active" : ""} onClick={() => choose(level)}>{labelFor(level)}</button>)}{settings.thinkingLevel === "custom" && <label>{locale === "zh" ? "Token 预算" : "Token budget"}<input type="number" min="0" step="128" value={settings.thinkingBudget} onFocus={(event) => event.currentTarget.select()} onChange={(event) => onChange({ ...settings, thinkingBudget: Number(event.target.value) || 0 })} /></label>}<small>{locale === "zh" ? "可选等级和默认值可在设置 → 模型菜单中配置。" : "Configure this model's available levels and default in Settings → Model menu."}</small></div>}</div>;
 }
 
 type PromptScope = "global" | "chat" | "notebook";
@@ -613,10 +697,44 @@ function ProviderJsonDialog({ mode, providers, onImport, onClose }: { mode: "imp
   </section></div>;
 }
 
+function ModelMenuSettings({ settings, onChange }: { settings: AppSettings; onChange: (settings: AppSettings) => void }) {
+  const locale = useContext(LocaleContext);
+  const { featured, others } = modelMenuGroups(settings);
+  const featuredKeys = new Set(featured.map((entry) => modelSettingsKey(entry.providerId, entry.model)));
+  const updatePreference = (entry: ModelEntry, update: (current: ModelThinkingSettings) => ModelThinkingSettings) => onChange(withModelThinking(settings, entry.providerId, entry.model, update(modelThinkingFor(settings, entry.providerId, entry.model))));
+  const toggleFeatured = (entry: ModelEntry, visible: boolean) => {
+    const key = modelSettingsKey(entry.providerId, entry.model);
+    const currentOrder = featured.map(({ providerId, model }) => ({ providerId, model }));
+    if (visible) {
+      if (featuredKeys.has(key) || featured.length >= 10) return;
+      onChange({ ...settings, modelDisplayOrder: [...currentOrder, { providerId: entry.providerId, model: entry.model }] });
+      return;
+    }
+    onChange({ ...settings, modelDisplayOrder: currentOrder.filter((item) => modelSettingsKey(item.providerId, item.model) !== key) });
+  };
+  const moveFeatured = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= featured.length) return;
+    const modelDisplayOrder = featured.map(({ providerId, model }) => ({ providerId, model }));
+    [modelDisplayOrder[index], modelDisplayOrder[target]] = [modelDisplayOrder[target], modelDisplayOrder[index]];
+    onChange({ ...settings, modelDisplayOrder });
+  };
+  const renderEntry = (entry: ModelEntry, index: number | null) => {
+    const preference = modelThinkingFor(settings, entry.providerId, entry.model);
+    const featuredEntry = index !== null;
+    const customLevels = preference.availableThinkingLevels.filter((level) => !DEFAULT_THINKING_LEVELS.includes(level));
+    return <article className="model-preference-card" key={`${entry.providerId}:${entry.model}`}>
+      <header><span className="model-emoji" aria-hidden="true">{providerEmoji(entry.provider)}</span><div><strong>{entry.provider.name}</strong><small>{entry.model}</small></div><div className="model-display-actions"><label className="model-display-toggle" title={!featuredEntry && featured.length >= 10 ? (locale === "zh" ? "主列表最多展示 10 个模型" : "The main list can show at most 10 models") : undefined}><input type="checkbox" checked={featuredEntry} disabled={!featuredEntry && featured.length >= 10} onChange={(event) => toggleFeatured(entry, event.target.checked)} />{locale === "zh" ? "主列表" : "Main list"}</label>{featuredEntry && <><button type="button" disabled={index === 0} onClick={() => moveFeatured(index!, -1)} aria-label={locale === "zh" ? "模型上移" : "Move model up"}><ArrowUp size={15} /></button><button type="button" disabled={index === featured.length - 1} onClick={() => moveFeatured(index!, 1)} aria-label={locale === "zh" ? "模型下移" : "Move model down"}><ArrowDown size={15} /></button></>}</div></header>
+      <div className="model-reasoning-controls"><label>{locale === "zh" ? "默认思考等级" : "Default thinking level"}<select value={preference.defaultThinkingLevel} onChange={(event) => updatePreference(entry, (current) => ({ ...current, defaultThinkingLevel: event.target.value }))}>{preference.availableThinkingLevels.map((level) => <option key={level} value={level}>{thinkingLevelLabel(level, locale)}</option>)}</select></label><div><span>{locale === "zh" ? "可选思考等级" : "Available thinking levels"}</span><div className="model-thinking-options">{DEFAULT_THINKING_LEVELS.map((level) => <label key={level}><input type="checkbox" checked={preference.availableThinkingLevels.includes(level)} onChange={(event) => updatePreference(entry, (current) => { const availableThinkingLevels = event.target.checked ? [...current.availableThinkingLevels, level] : current.availableThinkingLevels.filter((item) => item !== level); return { ...current, availableThinkingLevels, defaultThinkingLevel: availableThinkingLevels.includes(current.defaultThinkingLevel) ? current.defaultThinkingLevel : availableThinkingLevels[0] ?? "off" }; })} />{thinkingLevelLabel(level, locale)}</label>)}</div><label className="model-custom-levels">{locale === "zh" ? "额外提供商预设（逗号分隔）" : "Additional provider presets (comma-separated)"}<input defaultValue={customLevels.join(", ")} placeholder="minimal, xhigh" onBlur={(event) => updatePreference(entry, (current) => { const extras = [...new Set(event.currentTarget.value.split(",").map((level) => level.trim()).filter(Boolean))]; const standard = current.availableThinkingLevels.filter((level) => DEFAULT_THINKING_LEVELS.includes(level)); const availableThinkingLevels = [...standard, ...extras]; return { ...current, availableThinkingLevels, defaultThinkingLevel: availableThinkingLevels.includes(current.defaultThinkingLevel) ? current.defaultThinkingLevel : availableThinkingLevels[0] ?? "off" }; })} /></label></div></div>
+    </article>;
+  };
+  return <><h3>{locale === "zh" ? "模型菜单" : "Model menu"}</h3><p className="muted">{locale === "zh" ? `选择最多 10 个模型显示在主列表并调整顺序；其余模型固定归入“其他模型”。已选 ${featured.length}/10。` : `Choose and order up to 10 models for the main list. Every other model stays in Others. ${featured.length}/10 selected.`}</p><section className="model-preference-list"><div className="model-preference-group"><h4>{locale === "zh" ? "主列表" : "Main list"}</h4>{featured.map((entry, index) => renderEntry(entry, index))}{!featured.length && <p className="model-preference-empty">{locale === "zh" ? "尚未选择模型；所有模型会显示在“其他模型”。" : "No models selected. All models are in Others."}</p>}</div>{others.length > 0 && <div className="model-preference-group model-preference-others"><h4>{locale === "zh" ? "其他模型" : "Others"}</h4>{others.map((entry) => renderEntry(entry, null))}</div>}</section></>;
+}
+
 function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersistent, onChooseAutoBackup }: { settings: AppSettings; safety: StorageSafetyStatus | null; onChange: (settings: AppSettings) => void; onClose: () => void; onRequestPersistent: () => void; onChooseAutoBackup: () => void }) {
   const copy = useCopy();
   const { copied, copyText, copiedLabel } = useCopyFeedback();
-  const [tab, setTab] = useState<"models" | "behavior" | "tools" | "privacy">("models");
+  const [tab, setTab] = useState<"models" | "model-menu" | "behavior" | "tools" | "privacy">("models");
   const [editingProviderIds, setEditingProviderIds] = useState<Set<ProviderId>>(() => new Set());
   const [emojiPickerProviderId, setEmojiPickerProviderId] = useState<ProviderId | null>(null);
   const [providerJsonMode, setProviderJsonMode] = useState<"import" | "export" | null>(null);
@@ -694,7 +812,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
   };
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-modal="true" aria-label={copy.settings} onMouseDown={(event) => event.stopPropagation()}>
     <header><div><MossMark className="app-mark settings-mark" /><h2>{copy.settings}</h2></div><div className="settings-header-actions"><label>{settings.language === "zh" ? "语言" : "Language"}<select value={settings.language} aria-label={settings.language === "zh" ? "语言" : "Language"} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="en">English</option><option value="zh">中文</option></select></label><button className="icon-button" onClick={onClose} aria-label={copy.done}><X /></button></div></header>
-    <div className="settings-body"><nav>{[["models", copy.apiModels], ["behavior", copy.behavior], ["tools", copy.tools], ["privacy", copy.privacy]].map(([id, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</nav>
+    <div className="settings-body"><nav>{[["models", copy.apiModels], ["model-menu", settings.language === "zh" ? "模型菜单" : "Model menu"], ["behavior", copy.behavior], ["tools", copy.tools], ["privacy", copy.privacy]].map(([id, label]) => <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id as typeof tab)}>{label}</button>)}</nav>
       <div className="settings-content">
         {tab === "models" && <>
           <h3>{copy.apiTitle}</h3><p className="muted">{copy.apiDetail}</p>
@@ -711,11 +829,12 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
               <label>Protocol<select disabled={!editing} value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label>
               <label>{copy.key}<input disabled={!editing} type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label>
               <label>{copy.baseUrl}<input disabled={!editing} value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label>
-              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => updateProvider(id, "model", model)}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
+              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-row" key={modelIndex}><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => onChange(selectProviderDefaultModel(settings, id, model))}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>)}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
             </fieldset>;
           })}
         </>}
-        {tab === "behavior" && <><h3>{copy.behaviorTitle}</h3><label>{copy.systemPrompt}<textarea value={settings.systemPrompt} onChange={(event) => onChange({ ...settings, systemPrompt: event.target.value })} placeholder={copy.systemDetail} rows={5} /></label><div className="two-fields"><label>{copy.namingProvider}<select value={settings.namingProvider} onChange={(event) => onChange({ ...settings, namingProvider: event.target.value })}>{orderedProviders(settings).map(([id, provider]) => <option key={id} value={id}>{provider.name}</option>)}</select></label><label>{copy.namingModel}<input value={settings.namingModel} onChange={(event) => onChange({ ...settings, namingModel: event.target.value })} placeholder="Leave blank to use first message" /></label></div><p className="muted">{copy.namingDetail}</p><div className="two-fields"><label>{settings.language === "zh" ? "Thinking 强度" : "Thinking level"}<select value={settings.thinkingLevel} onChange={(event) => onChange({ ...settings, thinkingLevel: event.target.value as ThinkingLevel })}><option value="off">{settings.language === "zh" ? "关闭" : "Off"}</option><option value="low">{settings.language === "zh" ? "低" : "Low"}</option><option value="medium">{settings.language === "zh" ? "中" : "Medium"}</option><option value="high">{settings.language === "zh" ? "高" : "High"}</option><option value="custom">{settings.language === "zh" ? "自定义" : "Custom"}</option></select></label>{settings.thinkingLevel === "custom" && <label>{settings.language === "zh" ? "Thinking token budget" : "Thinking token budget"}<input type="number" min="0" step="128" value={settings.thinkingBudget} onFocus={(event) => event.currentTarget.select()} onChange={(event) => onChange({ ...settings, thinkingBudget: Number(event.target.value) || 0 })} /></label>}</div><p className="muted">{settings.language === "zh" ? "自定义预算会原样传给 Anthropic / Gemini。OpenAI 兼容协议仅支持 low / medium / high，会按预算映射到最接近的档位。" : "A custom budget is sent as-is to Anthropic and Gemini. OpenAI-compatible APIs only accept low / medium / high, so it is mapped to the nearest level."}</p><label>{copy.language}<select value={settings.language} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="en">English</option><option value="zh">中文</option></select></label><label className="toggle-row"><input type="checkbox" checked={settings.sendWithEnter} onChange={(event) => onChange({ ...settings, sendWithEnter: event.target.checked })} />{copy.enterSends}</label></>}
+        {tab === "model-menu" && <ModelMenuSettings settings={settings} onChange={onChange} />}
+        {tab === "behavior" && <><h3>{copy.behaviorTitle}</h3><label>{copy.systemPrompt}<textarea value={settings.systemPrompt} onChange={(event) => onChange({ ...settings, systemPrompt: event.target.value })} placeholder={copy.systemDetail} rows={5} /></label><div className="two-fields"><label>{copy.namingProvider}<select value={settings.namingProvider} onChange={(event) => onChange({ ...settings, namingProvider: event.target.value })}>{orderedProviders(settings).map(([id, provider]) => <option key={id} value={id}>{provider.name}</option>)}</select></label><label>{copy.namingModel}<input value={settings.namingModel} onChange={(event) => onChange({ ...settings, namingModel: event.target.value })} placeholder="Leave blank to use first message" /></label></div><p className="muted">{copy.namingDetail}</p><label className="toggle-row"><input type="checkbox" checked={settings.sendWithEnter} onChange={(event) => onChange({ ...settings, sendWithEnter: event.target.checked })} />{copy.enterSends}</label></>}
         {tab === "tools" && <><h3>{copy.toolsTitle}</h3><p className="muted">{copy.toolsDetail}</p><label>{copy.functionDeclarations}<textarea value={settings.nativeTools.functionDeclarations} onChange={(event) => onChange({ ...settings, nativeTools: { functionDeclarations: event.target.value } })} placeholder={copy.functionDetail} rows={8} /></label></>}
         {tab === "privacy" && <><h3>{copy.privacyTitle}</h3><p>{copy.privacyDetail}</p><p className="muted">{copy.privacyHint}</p><section className="data-safety"><h4>{settings.language === "zh" ? "数据安全" : "Data safety"}</h4><dl><div><dt>{settings.language === "zh" ? "持久化存储" : "Persistent storage"}</dt><dd>{safety?.persisted ? (settings.language === "zh" ? "已启用" : "Enabled") : (settings.language === "zh" ? "尚未确认" : "Not confirmed")}</dd></div><div><dt>{settings.language === "zh" ? "存储用量" : "Storage usage"}</dt><dd>{formatBytes(safety?.usage)} / {formatBytes(safety?.quota)}</dd></div><div><dt>{settings.language === "zh" ? "自动备份" : "Automatic backup"}</dt><dd>{safety?.automaticBackup === "granted" ? (settings.language === "zh" ? "已授权文件夹" : "Folder authorized") : safety?.automaticBackup === "unsupported" ? (settings.language === "zh" ? "此浏览器不支持" : "Unsupported here") : safety?.automaticBackup === "needs-permission" ? (settings.language === "zh" ? "需要重新授权" : "Needs permission") : (settings.language === "zh" ? "未设置" : "Not configured")}</dd></div><div><dt>{settings.language === "zh" ? "上次手动导出" : "Last manual export"}</dt><dd>{safety?.lastManualBackupAt ? new Date(safety.lastManualBackupAt).toLocaleString(settings.language === "zh" ? "zh-CN" : "en-US") : "—"}</dd></div></dl>{Boolean(safety?.usage && safety?.quota && safety.usage / safety.quota >= .8) && <p className="storage-warning">{settings.language === "zh" ? "存储空间已使用 80% 以上，请清理附件或立即导出备份。" : "Storage is over 80% used. Clear attachments or export a backup now."}</p>}<div className="provider-actions">{!safety?.persisted && <button type="button" onClick={onRequestPersistent}>{settings.language === "zh" ? "申请持久化存储" : "Request persistent storage"}</button>}{safety?.automaticBackup !== "unsupported" && <button type="button" onClick={onChooseAutoBackup}>{settings.language === "zh" ? "选择自动备份文件夹" : "Choose auto-backup folder"}</button>}</div><p className="muted">{settings.language === "zh" ? "自动备份仅在 Chrome / Edge 桌面版的已授权文件夹中运行，每 6 小时最多一次；清除浏览器数据不会清除该文件夹内的备份。" : "Automatic backup uses an authorized Chrome or Edge desktop folder, at most once every six hours. Browser data clearing does not remove files in that folder."}</p></section></>}
       </div>

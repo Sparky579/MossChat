@@ -5,6 +5,21 @@ export type ProviderKind = "openai" | "anthropic" | "google";
 /** A provider-native reasoning effort (for example `xhigh`) or the local `custom` budget mode. */
 export type ThinkingLevel = string;
 
+export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "custom"];
+
+/** A model is scoped to its provider so identical model names do not share preferences. */
+export type ModelDisplayItem = {
+  providerId: ProviderId;
+  model: string;
+};
+
+export type ModelThinkingSettings = {
+  defaultThinkingLevel: ThinkingLevel;
+  availableThinkingLevels: ThinkingLevel[];
+};
+
+export const modelSettingsKey = (providerId: ProviderId, model: string) => JSON.stringify([providerId, model]);
+
 export type ProviderSettings = {
   name: string;
   kind: ProviderKind;
@@ -35,6 +50,10 @@ export type AppSettings = {
   sendWithEnter: boolean;
   thinkingLevel: ThinkingLevel;
   thinkingBudget: number;
+  /** Ordered models shown before the fixed Others section; capped at ten entries. */
+  modelDisplayOrder: ModelDisplayItem[];
+  /** Per-provider-model reasoning defaults and the levels shown in the thinking menu. */
+  modelThinking: Record<string, ModelThinkingSettings>;
   nativeTools: {
     functionDeclarations: string;
   };

@@ -1,7 +1,7 @@
 import Dexie, { type EntityTable } from "dexie";
 import { strToU8, zipSync } from "fflate";
 import { randomUuid } from "./id";
-import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderKind, ProviderSettings, SavedAttachment, SavedMessage, ThinkingLevel } from "./types";
+import { DEFAULT_THINKING_LEVELS, modelSettingsKey, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type PromptPreset, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "./types";
 
 const DATA_KEY = "ai-chat.local.data.v1";
 const SETTINGS_KEY = "ai-chat.local.settings.v1";
@@ -109,6 +109,12 @@ export const defaultSettings: AppSettings = {
   sendWithEnter: true,
   thinkingLevel: "off",
   thinkingBudget: 2048,
+  modelDisplayOrder: [
+    { providerId: "google", model: baseProviders.google.model },
+    { providerId: "openai", model: baseProviders.openai.model },
+    { providerId: "anthropic", model: baseProviders.anthropic.model },
+  ],
+  modelThinking: {},
   nativeTools: { functionDeclarations: "[]" },
 };
 
@@ -138,6 +144,51 @@ function inferProvider(id: string, input?: Partial<ProviderSettings> & { modelEm
   };
 }
 
+function configuredModels(providers: Record<string, ProviderSettings>, providerOrder: string[]): ModelDisplayItem[] {
+  return providerOrder.flatMap((providerId) => providers[providerId].models
+    .map((model) => model.trim())
+    .filter(Boolean)
+    .map((model) => ({ providerId, model })));
+}
+
+function normalizedThinkingLevels(value: unknown): ThinkingLevel[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .filter((level): level is string => typeof level === "string")
+    .map((level) => level.trim().slice(0, 80))
+    .filter(Boolean))];
+}
+
+function normalizeModelDisplayOrder(value: unknown, available: ModelDisplayItem[]): ModelDisplayItem[] {
+  if (!Array.isArray(value)) return available.slice(0, 10);
+  const valid = new Map(available.map((item) => [modelSettingsKey(item.providerId, item.model), item]));
+  const seen = new Set<string>();
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Partial<ModelDisplayItem>;
+    if (typeof candidate.providerId !== "string" || typeof candidate.model !== "string") return [];
+    const key = modelSettingsKey(candidate.providerId, candidate.model.trim());
+    if (seen.has(key) || !valid.has(key)) return [];
+    seen.add(key);
+    return [valid.get(key)!];
+  }).slice(0, 10);
+}
+
+function normalizeModelThinking(value: unknown, available: ModelDisplayItem[], fallback: ThinkingLevel): Record<string, ModelThinkingSettings> {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return Object.fromEntries(available.map((item) => {
+    const raw = source[modelSettingsKey(item.providerId, item.model)];
+    const candidate = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Partial<ModelThinkingSettings> : {};
+    const defaultThinkingLevel = typeof candidate.defaultThinkingLevel === "string" && candidate.defaultThinkingLevel.trim()
+      ? candidate.defaultThinkingLevel.trim().slice(0, 80)
+      : fallback;
+    const availableThinkingLevels = normalizedThinkingLevels(candidate.availableThinkingLevels);
+    const levels = availableThinkingLevels.length ? availableThinkingLevels : [...DEFAULT_THINKING_LEVELS];
+    if (!levels.includes(defaultThinkingLevel)) levels.unshift(defaultThinkingLevel);
+    return [modelSettingsKey(item.providerId, item.model), { defaultThinkingLevel, availableThinkingLevels: levels }];
+  }));
+}
+
 export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const rawProviders = input?.providers ?? {};
   const providers = Object.fromEntries(Object.entries(rawProviders).map(([id, value]) => [id, inferProvider(id, value)]));
@@ -146,6 +197,12 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const activeProvider = providers[input?.activeProvider ?? ""] ? input!.activeProvider! : providerOrder[0];
   const namingProvider = providers[input?.namingProvider ?? ""] ? input!.namingProvider! : activeProvider;
   const legacyTools = input as (Partial<AppSettings> & { geminiTools?: { functionDeclarations?: string } }) | undefined;
+  const legacyThinkingLevel = typeof input?.thinkingLevel === "string" && input.thinkingLevel.trim() ? input.thinkingLevel.trim() : "off";
+  const availableModels = configuredModels(providers, providerOrder);
+  const modelDisplayOrder = normalizeModelDisplayOrder(input?.modelDisplayOrder, availableModels);
+  const modelThinking = normalizeModelThinking(input?.modelThinking, availableModels, legacyThinkingLevel);
+  const activeModel = providers[activeProvider]?.model;
+  const activeThinkingLevel = activeModel ? modelThinking[modelSettingsKey(activeProvider, activeModel)]?.defaultThinkingLevel : legacyThinkingLevel;
   return {
     ...defaultSettings,
     ...input,
@@ -154,8 +211,10 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
     providers,
     providerOrder,
     nativeTools: { functionDeclarations: input?.nativeTools?.functionDeclarations ?? legacyTools?.geminiTools?.functionDeclarations ?? "[]" },
-    thinkingLevel: typeof input?.thinkingLevel === "string" && input.thinkingLevel.trim() ? input.thinkingLevel.trim() : "off",
+    thinkingLevel: activeThinkingLevel ?? legacyThinkingLevel,
     thinkingBudget: Number.isFinite(input?.thinkingBudget) ? Math.max(0, Math.floor(input!.thinkingBudget!)) : defaultSettings.thinkingBudget,
+    modelDisplayOrder,
+    modelThinking,
     promptPresets: Array.isArray(input?.promptPresets) ? input.promptPresets.filter((preset): preset is PromptPreset => Boolean(preset && typeof preset.id === "string" && typeof preset.title === "string" && typeof preset.content === "string")).map((preset) => ({ id: preset.id, title: preset.title.slice(0, 80), content: preset.content })) : [],
   };
 }
