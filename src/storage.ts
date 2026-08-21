@@ -2,7 +2,7 @@ import Dexie, { type EntityTable } from "dexie";
 import { strToU8, zipSync } from "fflate";
 import { normalizeAdapterConfig } from "./adapter-config";
 import { randomUuid } from "./id";
-import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, modelSettingsKey, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type PromptPreset, type ProviderCapability, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "./types";
+import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, PROVIDER_CAPABILITIES, modelSettingsKey, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type PromptPreset, type ProviderCapability, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "./types";
 
 const DATA_KEY = "ai-chat.local.data.v1";
 const SETTINGS_KEY = "ai-chat.local.settings.v1";
@@ -92,8 +92,8 @@ class AiChatDatabase extends Dexie {
 export const db = new AiChatDatabase();
 
 const baseProviders: Record<string, ProviderSettings> = {
-  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash"], emoji: "🤖" },
-  openai: { name: "OpenAI compatible", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini"], emoji: "🤖" },
+  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"], emoji: "🤖" },
+  openai: { name: "OpenAI compatible", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini", "gpt-image-2"], emoji: "🤖" },
   anthropic: { name: "Anthropic", kind: "anthropic", apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", models: ["claude-sonnet-4-20250514"], emoji: "🤖" },
 };
 
@@ -130,7 +130,10 @@ function inferProvider(id: string, input?: Partial<ProviderSettings> & { modelEm
   const { modelEmojis: legacyModelEmojis, adapter: rawAdapter, modelAdapters: rawModelAdapters, ...providerInput } = input ?? {};
   const kind: ProviderKind = input?.kind ?? (id === "anthropic" ? "anthropic" : id === "google" ? "google" : "openai");
   const fallback = baseProviders[id] ?? (kind === "anthropic" ? baseProviders.anthropic : kind === "google" ? baseProviders.google : baseProviders.openai);
-  const models = [...new Set([...(Array.isArray(input?.models) ? input.models : []), input?.model?.trim() || fallback.model].map((model) => model.trim()).filter(Boolean))];
+  // Upgrade the app-owned OpenAI/Gemini entries with current native image models
+  // without adding guesses to a user-created compatible endpoint.
+  const builtInModels = id === "google" || id === "openai" ? fallback.models : [];
+  const models = [...new Set([...(Array.isArray(input?.models) ? input.models : []), input?.model?.trim() || fallback.model, ...builtInModels].map((model) => model.trim()).filter(Boolean))];
   const selectedModel = models.includes(input?.model?.trim() ?? "") ? input!.model!.trim() : models[0] ?? fallback.model;
   const legacyEmoji = Array.isArray(legacyModelEmojis) && typeof legacyModelEmojis[0] === "string" ? legacyModelEmojis[0] : "";
   const emoji = typeof providerInput.emoji === "string" && providerInput.emoji.trim() ? providerInput.emoji.trim().slice(0, 16) : legacyEmoji.trim().slice(0, 16) || "🤖";
@@ -173,9 +176,16 @@ function normalizedThinkingLevels(value: unknown): ThinkingLevel[] {
 
 function normalizedCapabilities(value: unknown): ProviderCapability[] {
   if (!Array.isArray(value)) return [...DEFAULT_PROVIDER_CAPABILITIES];
-  const valid = new Set<ProviderCapability>(["streaming", "reasoning", "vision", "pdf", "tools"]);
+  const valid = new Set<ProviderCapability>(PROVIDER_CAPABILITIES);
   const capabilities = [...new Set(value.filter((item): item is ProviderCapability => typeof item === "string" && valid.has(item as ProviderCapability)))];
   return capabilities.length ? capabilities : [...DEFAULT_PROVIDER_CAPABILITIES];
+}
+
+function hasNativeImageGeneration(provider: ProviderSettings | undefined, model: string) {
+  if (!provider) return false;
+  if (provider.kind === "openai") return /^gpt-image-(?:1(?:\.5)?|2)(?:[-._]|$)/i.test(model);
+  if (provider.kind === "google") return /^gemini-(?:2\.5-flash|3(?:\.1)?-(?:flash(?:-lite)?|pro))-image(?:[-._]|$)/i.test(model);
+  return false;
 }
 
 function normalizeModelDisplayOrder(value: unknown, available: ModelDisplayItem[]): ModelDisplayItem[] {
@@ -193,7 +203,7 @@ function normalizeModelDisplayOrder(value: unknown, available: ModelDisplayItem[
   }).slice(0, 10);
 }
 
-function normalizeModelThinking(value: unknown, available: ModelDisplayItem[], fallback: ThinkingLevel): Record<string, ModelThinkingSettings> {
+function normalizeModelThinking(value: unknown, available: ModelDisplayItem[], fallback: ThinkingLevel, providers: Record<string, ProviderSettings>): Record<string, ModelThinkingSettings> {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return Object.fromEntries(available.map((item) => {
     const raw = source[modelSettingsKey(item.providerId, item.model)];
@@ -204,7 +214,10 @@ function normalizeModelThinking(value: unknown, available: ModelDisplayItem[], f
     const availableThinkingLevels = normalizedThinkingLevels(candidate.availableThinkingLevels);
     const levels = availableThinkingLevels.length ? availableThinkingLevels : [...DEFAULT_THINKING_LEVELS];
     if (!levels.includes(defaultThinkingLevel)) levels.unshift(defaultThinkingLevel);
-    return [modelSettingsKey(item.providerId, item.model), { defaultThinkingLevel, availableThinkingLevels: levels, capabilities: normalizedCapabilities(candidate.capabilities) }];
+    const explicitCapabilities = Array.isArray(candidate.capabilities);
+    const capabilities = normalizedCapabilities(candidate.capabilities);
+    if (!explicitCapabilities && hasNativeImageGeneration(providers[item.providerId], item.model)) capabilities.push("image-generation");
+    return [modelSettingsKey(item.providerId, item.model), { defaultThinkingLevel, availableThinkingLevels: levels, capabilities: [...new Set(capabilities)] }];
   }));
 }
 
@@ -219,7 +232,7 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const legacyThinkingLevel = typeof input?.thinkingLevel === "string" && input.thinkingLevel.trim() ? input.thinkingLevel.trim() : "off";
   const availableModels = configuredModels(providers, providerOrder);
   const modelDisplayOrder = normalizeModelDisplayOrder(input?.modelDisplayOrder, availableModels);
-  const modelThinking = normalizeModelThinking(input?.modelThinking, availableModels, legacyThinkingLevel);
+  const modelThinking = normalizeModelThinking(input?.modelThinking, availableModels, legacyThinkingLevel, providers);
   const activeModel = providers[activeProvider]?.model;
   const activeThinkingLevel = activeModel ? modelThinking[modelSettingsKey(activeProvider, activeModel)]?.defaultThinkingLevel : legacyThinkingLevel;
   return {

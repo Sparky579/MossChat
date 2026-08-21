@@ -8,8 +8,12 @@ export type ThinkingLevel = string;
 export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "custom"];
 
 /** Features a model endpoint accepts. They are descriptive for built-ins and usable in custom adapter bodies. */
-export type ProviderCapability = "streaming" | "reasoning" | "vision" | "pdf" | "tools";
+export type ProviderCapability = "streaming" | "reasoning" | "vision" | "pdf" | "tools" | "image-generation";
 
+/** Every capability that can be described in provider/model settings or adapters. */
+export const PROVIDER_CAPABILITIES: ProviderCapability[] = ["streaming", "reasoning", "vision", "pdf", "tools", "image-generation"];
+
+/** Conservative defaults for ordinary chat models. Image generation is opt-in per model. */
 export const DEFAULT_PROVIDER_CAPABILITIES: ProviderCapability[] = ["streaming", "reasoning", "vision", "pdf", "tools"];
 
 export type AdapterBase = "openai-compatible" | "anthropic-messages" | "gemini-generate-content" | "ollama-chat" | "azure-openai" | "legacy-completions";

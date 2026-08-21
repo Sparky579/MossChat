@@ -1,4 +1,4 @@
-import type { AdapterBase, AdapterConfig, AdapterEventMapping, AdapterMessageFormat, AdapterStreamFormat, ProviderCapability, ProviderKind, ProviderSettings, ThinkingLevel } from "./types";
+import { PROVIDER_CAPABILITIES, type AdapterBase, type AdapterConfig, type AdapterEventMapping, type AdapterMessageFormat, type AdapterStreamFormat, type ProviderCapability, type ProviderKind, type ProviderSettings, type ThinkingLevel } from "./types";
 
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -21,7 +21,7 @@ const stringRecord = (value: unknown, maximum = 1000): Record<string, string> | 
 const supportedBases: AdapterBase[] = ["openai-compatible", "anthropic-messages", "gemini-generate-content", "ollama-chat", "azure-openai", "legacy-completions"];
 const supportedFormats: AdapterStreamFormat[] = ["sse", "ndjson", "json-array", "text"];
 const supportedMessageFormats: AdapterMessageFormat[] = ["openai", "anthropic", "gemini", "prompt"];
-const supportedCapabilities: ProviderCapability[] = ["streaming", "reasoning", "vision", "pdf", "tools"];
+const supportedCapabilities: ProviderCapability[] = PROVIDER_CAPABILITIES;
 
 const eventMappings = (value: unknown): AdapterEventMapping[] | undefined => {
   if (!Array.isArray(value)) return undefined;

@@ -1,6 +1,6 @@
 import type { ChatModelAdapter, ThreadMessage } from "@assistant-ui/react";
 import { adapterWhenMatches, configuredAdapter, mapAdapterEvent, materializeAdapter, readAdapterPath } from "./adapter-config";
-import type { AdapterConfig, AppSettings } from "./types";
+import type { AdapterConfig, AppSettings, ProviderSettings } from "./types";
 
 type ContentPart = {
   type: string;
@@ -155,6 +155,195 @@ const getMime = (value: string, fallback: string): string => {
   const match = /^data:([^;,]+)/.exec(value);
   return match?.[1] ?? fallback;
 };
+
+export type GeneratedImage = {
+  dataUrl: string;
+  mimeType: string;
+  filename: string;
+};
+
+export type ImageGenerationResult = {
+  images: GeneratedImage[];
+  text: string;
+  usage?: { input?: number; output?: number };
+};
+
+type ImageGenerationInput = {
+  messages: readonly ThreadMessage[];
+  abortSignal: AbortSignal;
+};
+
+/**
+ * These are the native image models that use the Image API / generateContent
+ * paths below. Other models can still describe the capability in Settings, but
+ * they must not be sent to an endpoint they do not implement.
+ */
+export function supportsNativeImageGeneration(provider: Pick<ProviderSettings, "kind" | "model"> | undefined): boolean {
+  if (!provider) return false;
+  if (provider.kind === "openai") return /^gpt-image-(?:1(?:\.5)?|2)(?:[-._]|$)/i.test(provider.model.trim());
+  if (provider.kind === "google") return /^gemini-(?:2\.5-flash|3(?:\.1)?-(?:flash(?:-lite)?|pro))-image(?:[-._]|$)/i.test(provider.model.trim());
+  return false;
+}
+
+const extensionForMime = (mimeType: string) => {
+  if (/webp/i.test(mimeType)) return "webp";
+  if (/jpe?g/i.test(mimeType)) return "jpg";
+  if (/gif/i.test(mimeType)) return "gif";
+  return "png";
+};
+
+const dataUrlFor = (data: string, mimeType: string) => data.startsWith("data:") || /^https?:\/\//i.test(data)
+  ? data
+  : `data:${mimeType};base64,${data}`;
+
+const imagePromptFor = (messages: readonly ThreadMessage[]) => {
+  const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
+  const prompt = latestUserMessage ? textFor(latestUserMessage).trim() : "";
+  if (!latestUserMessage || !prompt) throw new Error("Enter a description for the image first.");
+  return { latestUserMessage, prompt };
+};
+
+const imageRequest = async ({ endpoint, init, abortSignal, settings, provider }: {
+  endpoint: string;
+  init: RequestInit;
+  abortSignal: AbortSignal;
+  settings: AppSettings;
+  provider: ProviderSettings;
+}) => {
+  try {
+    return await fetch(endpoint, { ...init, signal: abortSignal });
+  } catch (cause) {
+    if (abortSignal.aborted) throw cause;
+    const original = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
+    throw new Error(providerFailure({
+      language: settings.language,
+      provider,
+      endpoint,
+      summary: settings.language === "zh"
+        ? `生图请求未能建立：${original}\n请检查 Endpoint、网络、CORS 和代理证书。`
+        : `The image request could not be established: ${original}\nCheck the endpoint, network, CORS, and any proxy certificate.`,
+    }));
+  }
+};
+
+const parsedImageResponse = async (response: Response, settings: AppSettings, provider: ProviderSettings, endpoint: string) => {
+  if (!response.ok) {
+    const details = conciseErrorBody(await response.text());
+    throw new Error(providerFailure({
+      language: settings.language,
+      provider,
+      endpoint,
+      summary: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+      details,
+    }));
+  }
+  try {
+    return await response.json() as Record<string, unknown>;
+  } catch (cause) {
+    throw new Error(providerFailure({
+      language: settings.language,
+      provider,
+      endpoint,
+      summary: settings.language === "zh" ? "生图接口没有返回可读取的 JSON。" : "The image endpoint did not return readable JSON.",
+      details: cause instanceof Error ? cause.message : String(cause),
+    }));
+  }
+};
+
+const imageError = (settings: AppSettings, message: string, english: string) => new Error(settings.language === "zh" ? message : english);
+
+/** Calls the current provider's native image-generation API and returns durable data URLs for the chat store. */
+export async function generateBrowserImages(settings: AppSettings, { messages, abortSignal }: ImageGenerationInput): Promise<ImageGenerationResult> {
+  const provider = settings.providers[settings.activeProvider];
+  if (!provider) throw imageError(settings, "当前提供商不存在。请先选择一个模型。", "The active provider no longer exists. Select a model first.");
+  if (!supportsNativeImageGeneration(provider)) {
+    throw imageError(settings, "当前模型不是已支持的生图模型。请选择 GPT Image 或 Gemini Image 模型。", "This model is not a supported image-generation model. Select a GPT Image or Gemini Image model.");
+  }
+  if (!provider.apiKey.trim()) throw imageError(settings, "请先在“设置 → API 与模型”中填写 API Key。", "Add an API key in Settings → API & models first.");
+  const { latestUserMessage, prompt } = imagePromptFor(messages);
+
+  if (provider.kind === "openai") {
+    const sourceImages = asParts(latestUserMessage).filter((part) => part.type === "image" && typeof part.image === "string" && part.image);
+    const sourceFiles = asParts(latestUserMessage).filter((part) => part.type === "file");
+    if (sourceFiles.length) throw imageError(settings, "GPT Image 生图只接受图片作为参考附件；请移除文档或文本文件。", "GPT Image accepts images, not document or text-file reference attachments.");
+    const editing = sourceImages.length > 0;
+    const endpoint = `${trimSlash(provider.baseUrl)}/images/${editing ? "edits" : "generations"}`;
+    let response: Response;
+    if (editing) {
+      const form = new FormData();
+      form.set("model", provider.model);
+      form.set("prompt", prompt);
+      for (const [index, image] of sourceImages.entries()) {
+        const blob = await (await fetch(String(image.image))).blob();
+        form.append("image", blob, image.filename || `reference-${index + 1}.${extensionForMime(getMime(String(image.image), "image/png"))}`);
+      }
+      response = await imageRequest({ endpoint, abortSignal, settings, provider, init: { method: "POST", headers: { Authorization: `Bearer ${provider.apiKey}` }, body: form } });
+    } else {
+      response = await imageRequest({
+        endpoint,
+        abortSignal,
+        settings,
+        provider,
+        init: {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` },
+          // gpt-image-2 returns b64_json by default; binary data is persisted locally instead of a short-lived URL.
+          body: JSON.stringify({ model: provider.model, prompt }),
+        },
+      });
+    }
+    const payload = await parsedImageResponse(response, settings, provider, endpoint);
+    const entries = Array.isArray(payload.data) ? payload.data : [];
+    const images = entries.flatMap((entry, index) => {
+      const item = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+      const data = typeof item?.b64_json === "string" ? item.b64_json : typeof item?.url === "string" ? item.url : "";
+      if (!data) return [];
+      const mimeType = typeof item?.mime_type === "string" ? item.mime_type : "image/png";
+      return [{ dataUrl: dataUrlFor(data, mimeType), mimeType, filename: `GPT Image ${index + 1}.${extensionForMime(mimeType)}` }];
+    });
+    if (!images.length) throw imageError(settings, "生图模型没有返回图片。", "The image model returned no image.");
+    const usage = tokenUsage(payload.usage) ?? undefined;
+    return { images, text: entries.map((entry) => entry && typeof entry === "object" && typeof (entry as Record<string, unknown>).revised_prompt === "string" ? String((entry as Record<string, unknown>).revised_prompt) : "").filter(Boolean).join("\n"), usage };
+  }
+
+  const base = trimSlash(provider.baseUrl);
+  const apiBase = /\/v1(?:beta)?$/i.test(base) ? base : `${base}/v1`;
+  const endpoint = `${apiBase}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`;
+  const response = await imageRequest({
+    endpoint,
+    abortSignal,
+    settings,
+    provider,
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...(settings.systemPrompt.trim() ? { system_instruction: { parts: [{ text: settings.systemPrompt.trim() }] } } : {}),
+        contents: googleContents(messages),
+        generationConfig: { responseModalities: ["IMAGE"] },
+      }),
+    },
+  });
+  const payload = await parsedImageResponse(response, settings, provider, endpoint);
+  const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+  const parts = candidates.flatMap((candidate) => {
+    const content = candidate && typeof candidate === "object" ? (candidate as Record<string, unknown>).content : null;
+    return content && typeof content === "object" && Array.isArray((content as Record<string, unknown>).parts) ? (content as Record<string, unknown>).parts : [];
+  });
+  const images = parts.flatMap((part, index) => {
+    const source = part && typeof part === "object" ? part as Record<string, unknown> : null;
+    const inline = source?.inlineData ?? source?.inline_data;
+    const item = inline && typeof inline === "object" ? inline as Record<string, unknown> : null;
+    const data = typeof item?.data === "string" ? item.data : "";
+    if (!data) return [];
+    const mimeType = typeof item?.mimeType === "string" ? item.mimeType : typeof item?.mime_type === "string" ? item.mime_type : "image/png";
+    return [{ dataUrl: dataUrlFor(data, mimeType), mimeType, filename: `Gemini Image ${index + 1}.${extensionForMime(mimeType)}` }];
+  });
+  if (!images.length) throw imageError(settings, "Gemini Image 没有返回图片。", "Gemini Image returned no image.");
+  const text = parts.map((part) => part && typeof part === "object" && typeof (part as Record<string, unknown>).text === "string" ? String((part as Record<string, unknown>).text) : "").filter(Boolean).join("\n");
+  const usage = tokenUsage(payload.usageMetadata) ?? undefined;
+  return { images, text, usage };
+}
 
 const attachmentText = (part: ContentPart) => {
   const name = part.filename ?? "document";

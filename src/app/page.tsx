@@ -38,16 +38,17 @@ import {
   TextQuote,
   Trash2,
   Upload,
+  WandSparkles,
   X,
 } from "lucide-react";
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { adapterBaseForProviderKind, adapterGenerationPrompt, adapterPreset, configuredAdapter, parseAdapterFixture, validateAdapterConfig, type AdapterFixtureReport } from "@/adapter-config";
-import { createBrowserAdapter, generateChatTitle } from "@/providers";
+import { createBrowserAdapter, generateBrowserImages, generateChatTitle, supportsNativeImageGeneration } from "@/providers";
 import { chatSearchText, chatToMarkdown, compactContext, estimatedTokens, fallbackTitle, firstText, functionCallFromText, inflateMessages, messageParts, messageText, messageUsage, savedAttachmentFromDraft, searchExcerpt, visibleMessagesAfterClear, type ContentPart, type FileAttachmentDraft, type FunctionCallRequest } from "@/chat-content";
 import { parseProviderJson, serializeProviderJson } from "@/provider-json";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, settingsWithoutImportedKeys, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, SYNC_CONFIGURATION_CHANGED_ERROR, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
-import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, modelSettingsKey, type AdapterBase, type AdapterConfig, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type NotebookPromptMode, type PromptPreset, type ProviderCapability, type ProviderId, type ProviderKind, type ProviderSettings, type SavedMessage, type ThinkingLevel } from "@/types";
+import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, PROVIDER_CAPABILITIES, modelSettingsKey, type AdapterBase, type AdapterConfig, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type NotebookPromptMode, type PromptPreset, type ProviderCapability, type ProviderId, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "@/types";
 import { useDismissOnOutside } from "@/use-dismiss-on-outside";
 
 type Locale = "en" | "zh";
@@ -130,7 +131,7 @@ function modelThinkingFor(settings: AppSettings, providerId: ProviderId, model: 
   const adapterCapabilities = configured?.capabilities;
   const availableThinkingLevels = [...new Set((saved?.availableThinkingLevels ?? adapterLevels ?? fallback.availableThinkingLevels).map((level) => level.trim()).filter(Boolean))];
   const defaultThinkingLevel = saved?.defaultThinkingLevel?.trim() || fallback.defaultThinkingLevel;
-  const capabilities = [...new Set((saved?.capabilities ?? adapterCapabilities ?? fallback.capabilities ?? DEFAULT_PROVIDER_CAPABILITIES).filter((capability): capability is ProviderCapability => DEFAULT_PROVIDER_CAPABILITIES.includes(capability as ProviderCapability)))];
+  const capabilities = [...new Set((saved?.capabilities ?? adapterCapabilities ?? fallback.capabilities ?? DEFAULT_PROVIDER_CAPABILITIES).filter((capability): capability is ProviderCapability => PROVIDER_CAPABILITIES.includes(capability as ProviderCapability)))];
   if (!availableThinkingLevels.length) availableThinkingLevels.push(...DEFAULT_THINKING_LEVELS);
   if (!availableThinkingLevels.includes(defaultThinkingLevel)) availableThinkingLevels.unshift(defaultThinkingLevel);
   return { defaultThinkingLevel, availableThinkingLevels, capabilities: capabilities.length ? capabilities : [...DEFAULT_PROVIDER_CAPABILITIES] };
@@ -148,7 +149,7 @@ function withModelThinking(settings: AppSettings, providerId: ProviderId, model:
     thinkingLevel: active ? defaultThinkingLevel : settings.thinkingLevel,
     modelThinking: {
       ...settings.modelThinking,
-      [modelSettingsKey(providerId, model)]: { defaultThinkingLevel, availableThinkingLevels, capabilities: [...new Set((preference.capabilities ?? DEFAULT_PROVIDER_CAPABILITIES).filter((capability): capability is ProviderCapability => DEFAULT_PROVIDER_CAPABILITIES.includes(capability as ProviderCapability)))], },
+      [modelSettingsKey(providerId, model)]: { defaultThinkingLevel, availableThinkingLevels, capabilities: [...new Set((preference.capabilities ?? DEFAULT_PROVIDER_CAPABILITIES).filter((capability): capability is ProviderCapability => PROVIDER_CAPABILITIES.includes(capability as ProviderCapability)))], },
     },
   };
 }
@@ -325,7 +326,7 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onClear, onFunc
   </article>;
 }
 
-function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[]) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void }) {
+function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[], imageGeneration: boolean) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void }) {
   const copy = useCopy();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -333,12 +334,16 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   const [listening, setListening] = useState(false);
   const [sending, setSending] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [imageGeneration, setImageGeneration] = useState(false);
   const recognition = useRef<SpeechRecognitionLike | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const composerInput = useRef<HTMLTextAreaElement | null>(null);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const attachmentsRef = useRef<DraftAttachment[]>([]);
   const activeProvider = settings.providers[settings.activeProvider] ?? orderedProviders(settings)[0]?.[1];
+  const imageGenerationAvailable = Boolean(activeProvider
+    && supportsNativeImageGeneration(activeProvider)
+    && modelThinkingFor(settings, settings.activeProvider, activeProvider.model).capabilities?.includes("image-generation"));
   const commandDraft = text.trimStart();
   const commandToken = commandDraft.split(/\s+/, 1)[0]?.toLocaleLowerCase() ?? "";
   const commandOptions = [
@@ -346,7 +351,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
     { value: "/compact", description: settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model." },
     { value: "/prompt", description: settings.language === "zh" ? "打开当前对话、Notebook 或全局 Prompt 设置" : "Open prompt settings for this chat, its Notebook, or the global default." },
   ];
-  const commandMatches = !attachments.length && commandDraft === commandToken && commandToken.startsWith("/") ? commandOptions.filter((command) => command.value.startsWith(commandToken)) : [];
+  const commandMatches = !imageGeneration && !attachments.length && commandDraft === commandToken && commandToken.startsWith("/") ? commandOptions.filter((command) => command.value.startsWith(commandToken)) : [];
   const commandOpen = commandMatches.length > 0;
   const completeCommand = (value: string) => {
     setText(value);
@@ -354,6 +359,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   };
 
   useEffect(() => { attachmentsRef.current = attachments; }, [attachments]);
+  useEffect(() => { if (!imageGenerationAvailable) setImageGeneration(false); }, [imageGenerationAvailable]);
   useLayoutEffect(() => {
     const input = composerInput.current;
     if (!input) return;
@@ -393,7 +399,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
     if (sending || isRunning || (!text.trim() && attachments.length === 0)) return;
     setSending(true);
     try {
-      await onSend(text.trim(), attachments);
+      await onSend(text.trim(), attachments, imageGeneration);
       attachments.forEach((attachment) => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl));
       setText("");
       setAttachments([]);
@@ -428,7 +434,8 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
     <div className="composer-line">
       <input ref={fileInput} hidden type="file" multiple accept="image/*,application/pdf,.txt,.md,.csv,.doc,.docx" onChange={(event) => { addFiles(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
       <button type="button" className="icon-button composer-plus" aria-label="Attach files" onClick={() => fileInput.current?.click()}><Plus size={23} /></button>
-      <textarea ref={composerInput} rows={1} value={text} placeholder={copy.ask} className="composer-input" enterKeyHint="enter" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { const firstMatch = commandMatches[0]; if (firstMatch && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && commandToken !== firstMatch.value) { event.preventDefault(); completeCommand(firstMatch.value); return; } if (settings.sendWithEnter && !window.matchMedia("(max-width: 760px)").matches && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
+      <button type="button" className={`icon-button image-generate-button ${imageGeneration ? "active" : ""}`} disabled={!imageGenerationAvailable || isRunning} aria-pressed={imageGeneration} aria-label={settings.language === "zh" ? "切换生图模式" : "Toggle image generation"} title={!imageGenerationAvailable ? (settings.language === "zh" ? "选择 GPT Image 或 Gemini Image 模型后可用" : "Select a GPT Image or Gemini Image model to use this") : (imageGeneration ? (settings.language === "zh" ? "生图模式已开启" : "Image generation is on") : (settings.language === "zh" ? "生图" : "Generate image"))} onClick={() => setImageGeneration((current) => !current)}><WandSparkles size={18} /></button>
+      <textarea ref={composerInput} rows={1} value={text} placeholder={imageGeneration ? (settings.language === "zh" ? "描述你想生成或修改的图片…" : "Describe the image to create or edit…") : copy.ask} className="composer-input" enterKeyHint="enter" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { const firstMatch = commandMatches[0]; if (firstMatch && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && commandToken !== firstMatch.value) { event.preventDefault(); completeCommand(firstMatch.value); return; } if (settings.sendWithEnter && !window.matchMedia("(max-width: 760px)").matches && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
       <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""}`} ref={modelMenuRef}>
         <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => setModelOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{providerEmoji(activeProvider)}</span><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
         {modelOpen && <div className="model-menu composer-model-menu"><ModelMenuOptions settings={settings} onChange={onSettingsChange} onClose={() => setModelOpen(false)} /></div>}
@@ -459,7 +466,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
     if (viewport && stickToBottomRef.current) viewport.scrollTop = viewport.scrollHeight;
   }, [chat.messages, isRunning]);
 
-  const run = useCallback(async (baseMessages: SavedMessage[]) => {
+  const run = useCallback(async (baseMessages: SavedMessage[], imageGeneration = false) => {
     const assistantId = newId("assistant");
     let nextMessages: SavedMessage[] = [...baseMessages, { id: assistantId, role: "assistant", content: [], createdAt: new Date().toISOString(), status: { running: true } }];
     const controller = new AbortController();
@@ -475,8 +482,26 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
       frame = 0;
     };
     try {
-      const adapter = createBrowserAdapter(() => ({ ...settings, systemPrompt }));
       const context = visibleMessagesAfterClear(baseMessages).slice(-MAX_CONTEXT_MESSAGES);
+      if (imageGeneration) {
+        const result = await generateBrowserImages({ ...settings, systemPrompt }, { messages: inflateMessages(context) as never, abortSignal: controller.signal });
+        const attachments: SavedAttachment[] = result.images.map((image, index) => ({
+          id: newId("generated-image"),
+          type: "image",
+          name: image.filename || `Generated image ${index + 1}`,
+          contentType: image.mimeType,
+          content: [{ type: "image", image: image.dataUrl, filename: image.filename }],
+          status: { generated: true },
+        }));
+        const content: ContentPart[] = [
+          ...(result.text ? [{ type: "text", text: result.text }] : []),
+          ...(result.usage ? [{ type: "data", name: "token_usage", data: { ...(result.usage.input === undefined ? {} : { inputTokens: result.usage.input }), ...(result.usage.output === undefined ? {} : { outputTokens: result.usage.output }) } }] : []),
+        ];
+        nextMessages = nextMessages.map((message) => message.id === assistantId ? { ...message, content, attachments, status: undefined } : message);
+        onSnapshot(chat.id, nextMessages, [assistantId]);
+        return;
+      }
+      const adapter = createBrowserAdapter(() => ({ ...settings, systemPrompt }));
       const estimatedInput = estimatedTokens(`${systemPrompt}\n${context.map(messageText).join("\n")}`);
       const stream = adapter.run({ messages: inflateMessages(context), abortSignal: controller.signal } as never) as AsyncIterable<{ content?: ContentPart[] }>;
       for await (const update of stream) {
@@ -526,16 +551,16 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
     onSnapshot(chat.id, [...chat.messages, marker, compacted, acknowledged], [marker.id, compacted.id, acknowledged.id]);
   }, [chat.id, chat.messages, isRunning, onSnapshot, settings.language, systemPrompt]);
 
-  const send = useCallback(async (text: string, attachments: DraftAttachment[]) => {
-    if (!attachments.length) {
+  const send = useCallback(async (text: string, attachments: DraftAttachment[], imageGeneration = false) => {
+    if (!imageGeneration && !attachments.length) {
       const command = text.trim().toLocaleLowerCase();
       if (command === "/clear") { clearConversation(); return; }
       if (command === "/compact") { compactConversation(); return; }
       if (command === "/prompt") { onOpenPromptSettings(); return; }
     }
     const savedAttachments = await Promise.all(attachments.map((attachment) => savedAttachmentFromDraft(attachment)));
-    const user: SavedMessage = { id: newId("user"), role: "user", content: text ? [{ type: "text", text }] : [], attachments: savedAttachments, createdAt: new Date().toISOString() };
-    await run([...chat.messages, user]);
+    const user: SavedMessage = { id: newId("user"), role: "user", content: text ? [{ type: "text", text }] : [], attachments: savedAttachments, createdAt: new Date().toISOString(), ...(imageGeneration ? { status: { imageGeneration: true } } : {}) };
+    await run([...chat.messages, user], imageGeneration);
   }, [chat.messages, clearConversation, compactConversation, onOpenPromptSettings, run]);
 
   useEffect(() => {
@@ -561,12 +586,13 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
     // button had done nothing.
     if (!edited) return;
     const before = chat.messages.slice(0, index);
-    void run([...before, { ...target, content: [{ type: "text", text: edited }], createdAt: new Date().toISOString() }]);
+    void run([...before, { ...target, content: [{ type: "text", text: edited }], createdAt: new Date().toISOString() }], target.status?.imageGeneration === true);
   };
 
   const reload = (index: number) => {
     const withoutLastAssistant = chat.messages.slice(0, index);
-    if (withoutLastAssistant.length) void run(withoutLastAssistant);
+    const previousUser = [...withoutLastAssistant].reverse().find((message) => message.role === "user");
+    if (withoutLastAssistant.length) void run(withoutLastAssistant, previousUser?.status?.imageGeneration === true);
   };
 
   const submitFunctionResult = (index: number, call: FunctionCallRequest) => {
@@ -586,7 +612,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
   };
   const empty = chat.messages.length === 0;
   return <div className="thread-root">
-    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onClear={clearConversation} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><p>{copy.mistakes}</p></footer></>}
+    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><StarterPrompts onSend={(prompt) => void send(prompt, [], false)} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onClear={clearConversation} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><p>{copy.mistakes}</p></footer></>}
   </div>;
 }
 
@@ -899,6 +925,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     vision: settings.language === "zh" ? "图片" : "Images",
     pdf: "PDF",
     tools: settings.language === "zh" ? "工具调用" : "Tools",
+    "image-generation": settings.language === "zh" ? "生图" : "Image generation",
   }[capability]);
   const modelOptions = (id: ProviderId, provider: ProviderSettings, model: string, index: number) => {
     if (!model.trim()) return null;
@@ -913,7 +940,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
       <div className="provider-model-options-body">
         <label>{settings.language === "zh" ? "默认思考等级" : "Default thinking"}<select value={preference.defaultThinkingLevel} onChange={(event) => updateModelPreference(id, model, (current) => ({ ...current, defaultThinkingLevel: event.target.value }))}>{preference.availableThinkingLevels.map((level) => <option key={level} value={level}>{thinkingLevelLabel(level, settings.language)}</option>)}</select></label>
         <div className="provider-model-levels"><span>{settings.language === "zh" ? "可选思考等级" : "Available thinking levels"}</span><div className="model-thinking-options">{DEFAULT_THINKING_LEVELS.map((level) => <label key={level}><input type="checkbox" checked={preference.availableThinkingLevels.includes(level)} onChange={(event) => updateModelPreference(id, model, (current) => { const availableThinkingLevels = event.target.checked ? [...current.availableThinkingLevels, level] : current.availableThinkingLevels.filter((item) => item !== level); return { ...current, availableThinkingLevels, defaultThinkingLevel: availableThinkingLevels.includes(current.defaultThinkingLevel) ? current.defaultThinkingLevel : availableThinkingLevels[0] ?? "off" }; })} />{thinkingLevelLabel(level, settings.language)}</label>)}</div><label className="model-custom-levels">{settings.language === "zh" ? "额外等级（逗号分隔）" : "Extra levels (comma-separated)"}<input defaultValue={customLevels.join(", ")} placeholder="minimal, xhigh" onBlur={(event) => updateModelPreference(id, model, (current) => { const extras = [...new Set(event.currentTarget.value.split(",").map((level) => level.trim()).filter(Boolean))]; const standard = current.availableThinkingLevels.filter((level) => DEFAULT_THINKING_LEVELS.includes(level)); const availableThinkingLevels = [...standard, ...extras]; return { ...current, availableThinkingLevels, defaultThinkingLevel: availableThinkingLevels.includes(current.defaultThinkingLevel) ? current.defaultThinkingLevel : availableThinkingLevels[0] ?? "off" }; })} /></label></div>
-        <div className="provider-model-capabilities"><span>{settings.language === "zh" ? "此模型支持" : "This model supports"}</span><div>{DEFAULT_PROVIDER_CAPABILITIES.map((capability) => <label key={capability}><input type="checkbox" checked={preference.capabilities?.includes(capability) ?? false} onChange={(event) => updateModelPreference(id, model, (current) => ({ ...current, capabilities: event.target.checked ? [...new Set([...(current.capabilities ?? []), capability])] : (current.capabilities ?? []).filter((item) => item !== capability) }))} />{capabilityLabel(capability)}</label>)}</div></div>
+        <div className="provider-model-capabilities"><span>{settings.language === "zh" ? "此模型支持" : "This model supports"}</span><div>{PROVIDER_CAPABILITIES.map((capability) => <label key={capability}><input type="checkbox" checked={preference.capabilities?.includes(capability) ?? false} onChange={(event) => updateModelPreference(id, model, (current) => ({ ...current, capabilities: event.target.checked ? [...new Set([...(current.capabilities ?? []), capability])] : (current.capabilities ?? []).filter((item) => item !== capability) }))} />{capabilityLabel(capability)}</label>)}</div></div>
         <button type="button" className="provider-model-adapter-button" onClick={() => setAdapterTarget({ providerId: id, model })}><SlidersHorizontal size={15} />{settings.language === "zh" ? "高级请求适配器（JSON）" : "Advanced request adapter (JSON)"}</button>
       </div>
     </div>;

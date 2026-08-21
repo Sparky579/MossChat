@@ -170,6 +170,9 @@ button { color: inherit; }
 .attachment-remove { width: 22px; height: 22px; }
 .composer-line { display: flex; min-width: 0; min-height: 34px; align-items: flex-end; gap: 4px; }
 .composer-plus { width: 34px; height: 34px; }
+.image-generate-button { width: 34px; height: 34px; color: #157347; background: #edf7f0; }
+.image-generate-button:hover:not(:disabled), .image-generate-button.active { color: #fff; background: #198754; }
+.image-generate-button:disabled { color: var(--faint); background: transparent; cursor: not-allowed; }
 .composer-input { display: block; flex: 1 1 140px; width: 100%; min-width: 0; max-height: 148px; padding: 6px 5px 4px; overflow-y: hidden; border: 0; outline: 0; resize: none; color: var(--text); background: transparent; font-size: 16px; line-height: 23px; transition: height .18s cubic-bezier(.2,.8,.2,1); }
 .composer-input::placeholder { color: var(--muted); }
 .composer-model-wrap { min-width: 0; flex: 0 1 auto; }
