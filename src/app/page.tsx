@@ -11,6 +11,7 @@ import {
   Cloud,
   Copy,
   Download,
+  Eraser,
   FileText,
   GitBranch,
   ImagePlus,
@@ -328,7 +329,7 @@ function MessageBody({ message }: { message: SavedMessage }) {
   </>;
 }
 
-function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResult, onFeedback, canUndoClear, onUndoClear }: { message: SavedMessage; index: number; onFork: (index: number) => void; onEdit: (index: number, text: string) => void; onReload: (index: number) => void; onFunctionResult: (index: number, call: FunctionCallRequest) => void; onFeedback: (target: FeedbackTarget) => void; canUndoClear?: boolean; onUndoClear?: () => void }) {
+function ChatMessage({ message, index, onFork, onEdit, onReload, onClear, onFunctionResult, onFeedback, canUndoClear, onUndoClear }: { message: SavedMessage; index: number; onFork: (index: number) => void; onEdit: (index: number, text: string) => void; onReload: (index: number) => void; onClear: () => void; onFunctionResult: (index: number, call: FunctionCallRequest) => void; onFeedback: (target: FeedbackTarget) => void; canUndoClear?: boolean; onUndoClear?: () => void }) {
   const user = message.role === "user";
   const cleared = message.content.some((part) => (part as ContentPart).type === "clear-boundary");
   const hasThinking = !user && message.content.some((part) => part.type === "reasoning" && Boolean(part.text));
@@ -342,7 +343,7 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResul
     if (text) await copyText(text);
   };
   const usage = user ? null : messageUsage(message);
-  if (cleared) return <div className="clear-boundary" role="status"><span>{locale === "zh" ? "对话已清空" : "Conversation cleared"}</span>{canUndoClear && <button type="button" onClick={onUndoClear}>{locale === "zh" ? "撤回" : "Undo"}</button>}</div>;
+  if (cleared) return <div className="clear-boundary" role="status"><span>{locale === "zh" ? "上下文已清除；上方消息不会发送给模型" : "Context cleared; messages above are not sent to the model"}</span>{canUndoClear && <button type="button" onClick={onUndoClear}>{locale === "zh" ? "撤回" : "Undo"}</button>}</div>;
   return <article className={`message-row ${user ? "message-user" : "message-assistant"} ${hasThinking ? "has-thinking" : ""}`}>
     <div className="message-content">
       {!user && <div className="assistant-avatar"><MossMark size={15} /></div>}
@@ -353,6 +354,7 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onFunctionResul
       <button className={`icon-button copy-button ${copied ? "is-copied" : ""}`} type="button" aria-label={copied ? copiedLabel : (locale === "zh" ? "复制" : "Copy")} title={copied ? copiedLabel : (locale === "zh" ? "复制" : "Copy")} onClick={() => void copyMessage()}>{copied ? <Check size={16} /> : <Copy size={16} />}</button>
       {user && <button className="icon-button" type="button" aria-label="Edit" title="Edit" onClick={() => { setDraft(messageText(message)); setEditing(true); }}><Pencil size={16} /></button>}
       {!user && <button className="icon-button" type="button" aria-label="Regenerate" title="Regenerate" onClick={() => onReload(index)}><RefreshCw size={16} /></button>}
+      {!user && <button className="icon-button" type="button" aria-label={locale === "zh" ? "清除上下文" : "Clear context"} title={locale === "zh" ? "清除上下文" : "Clear context"} onClick={onClear}><Eraser size={16} /></button>}
       {functionCall && <button className="icon-button" type="button" aria-label="Return function result" title={locale === "zh" ? "填写函数结果" : "Return function result"} onClick={() => onFunctionResult(index, functionCall)}><MoreHorizontal size={16} /></button>}
       <button className="icon-button" type="button" title={locale === "zh" ? "从这里分支为新对话" : "Branch into a new chat"} onClick={() => onFork(index)}><GitBranch size={16} /></button>
     </div>
@@ -370,6 +372,7 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   const recognition = useRef<SpeechRecognitionLike | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const composerInput = useRef<HTMLTextAreaElement | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const attachmentsRef = useRef<DraftAttachment[]>([]);
   const activeProvider = settings.providers[settings.activeProvider] ?? orderedProviders(settings)[0]?.[1];
   const commandOpen = text.trimStart().startsWith("/");
@@ -388,6 +391,14 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
     recognition.current?.stop();
     attachmentsRef.current.forEach((attachment) => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl));
   }, []);
+  useEffect(() => {
+    if (!modelOpen) return;
+    const closeWhenOutside = (event: PointerEvent) => { if (!modelMenuRef.current?.contains(event.target as Node)) setModelOpen(false); };
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") setModelOpen(false); };
+    document.addEventListener("pointerdown", closeWhenOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => { document.removeEventListener("pointerdown", closeWhenOutside); document.removeEventListener("keydown", closeOnEscape); };
+  }, [modelOpen]);
 
   const addFiles = useCallback((files: File[]) => {
     let usedBytes = attachments.reduce((total, attachment) => total + attachment.file.size, 0);
@@ -443,13 +454,13 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
   };
 
   return <div className={`gemini-composer ${dragging ? "is-dragging" : ""}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); addFiles(Array.from(event.dataTransfer.files)); }}>
-    {commandOpen && <div className="composer-command-menu" role="listbox"><button type="button" onClick={() => { setText(""); onCommand("clear"); }}><strong>/clear</strong><span>{settings.language === "zh" ? "清空当前上下文，可在发送下一句前撤回" : "Clear this context. Undo before the next message."}</span></button><button type="button" onClick={() => { setText(""); onCommand("compact"); }}><strong>/compact</strong><span>{settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model."}</span></button></div>}
+    {commandOpen && <div className="composer-command-menu" role="listbox"><button type="button" onClick={() => { setText(""); onCommand("clear"); }}><strong>/clear</strong><span>{settings.language === "zh" ? "保留消息显示，但不再将上方内容发送给模型" : "Keep messages visible, but stop sending earlier context to the model."}</span></button><button type="button" onClick={() => { setText(""); onCommand("compact"); }}><strong>/compact</strong><span>{settings.language === "zh" ? "本地注入完整压缩上下文，不调用模型" : "Inject local compact context without calling the model."}</span></button></div>}
     {attachments.length > 0 && <div className="composer-attachments">{attachments.map((attachment) => <span className="composer-attachment" key={attachment.id}><span className="attachment-icon">{attachment.file.type.startsWith("image/") ? <ImagePlus size={18} /> : <FileText size={18} />}</span><span className="attachment-name">{attachment.file.name}</span><button className="icon-button attachment-remove" type="button" aria-label="Remove attachment" onClick={() => removeAttachment(attachment.id)}><X size={14} /></button></span>)}</div>}
     <div className="composer-line">
       <input ref={fileInput} hidden type="file" multiple accept="image/*,application/pdf,.txt,.md,.csv,.doc,.docx" onChange={(event) => { addFiles(Array.from(event.target.files ?? [])); event.currentTarget.value = ""; }} />
       <button type="button" className="icon-button composer-plus" aria-label="Attach files" onClick={() => fileInput.current?.click()}><Plus size={23} /></button>
       <textarea ref={composerInput} rows={1} value={text} placeholder={copy.ask} className="composer-input" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { if (settings.sendWithEnter && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
-      <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""}`}>
+      <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""}`} ref={modelMenuRef}>
         <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => setModelOpen((current) => !current)}><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
         {modelOpen && <div className="model-menu composer-model-menu"><ModelMenuOptions settings={settings} onChange={onSettingsChange} onClose={() => setModelOpen(false)} /></div>}
       </div>
@@ -597,14 +608,13 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
 
   const cancel = () => abortRef.current?.abort();
   const clearBoundary = chat.messages.map((message) => message.content.some((part) => (part as ContentPart).type === "clear-boundary")).lastIndexOf(true);
-  const displayedMessages = clearBoundary < 0 ? chat.messages : chat.messages.slice(clearBoundary);
   const undoClear = () => {
     if (clearBoundary < 0 || clearBoundary !== chat.messages.length - 1) return;
     onSnapshot(chat.id, chat.messages.slice(0, clearBoundary));
   };
   const empty = chat.messages.length === 0;
   return <div className="thread-root">
-    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{displayedMessages.map((message, displayIndex) => { const index = clearBoundary < 0 ? displayIndex : clearBoundary + displayIndex; return <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />; })}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><p>{copy.mistakes}</p></footer></>}
+    {empty ? <div className="hero-state"><div className="hero-copy"><MossMark className="app-mark hero-mark" /><h1>{copy.explore}</h1><p>{copy.hero}</p></div><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><StarterPrompts onSend={(prompt) => void send(prompt, [])} /></div> : <><div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onClear={clearConversation} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />)}</div><footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} onCommand={(command) => command === "clear" ? clearConversation() : compactConversation()} /><p>{copy.mistakes}</p></footer></>}
   </div>;
 }
 
