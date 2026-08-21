@@ -90,9 +90,9 @@ class AiChatDatabase extends Dexie {
 export const db = new AiChatDatabase();
 
 const baseProviders: Record<string, ProviderSettings> = {
-  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash"] },
-  openai: { name: "OpenAI compatible", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini"] },
-  anthropic: { name: "Anthropic", kind: "anthropic", apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", models: ["claude-sonnet-4-20250514"] },
+  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash"], modelEmojis: ["🤖"] },
+  openai: { name: "OpenAI compatible", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini"], modelEmojis: ["🤖"] },
+  anthropic: { name: "Anthropic", kind: "anthropic", apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", models: ["claude-sonnet-4-20250514"], modelEmojis: ["🤖"] },
 };
 
 export const defaultSettings: AppSettings = {
@@ -123,6 +123,8 @@ function inferProvider(id: string, input?: Partial<ProviderSettings>): ProviderS
   const fallback = baseProviders[id] ?? (kind === "anthropic" ? baseProviders.anthropic : kind === "google" ? baseProviders.google : baseProviders.openai);
   const models = [...new Set([...(Array.isArray(input?.models) ? input.models : []), input?.model?.trim() || fallback.model].map((model) => model.trim()).filter(Boolean))];
   const selectedModel = models.includes(input?.model?.trim() ?? "") ? input!.model!.trim() : models[0] ?? fallback.model;
+  const inputEmojis = Array.isArray(input?.modelEmojis) ? input.modelEmojis : [];
+  const modelEmojis = models.map((_, index) => typeof inputEmojis[index] === "string" && inputEmojis[index].trim() ? inputEmojis[index].trim().slice(0, 16) : "🤖");
   return {
     ...fallback,
     ...input,
@@ -130,6 +132,7 @@ function inferProvider(id: string, input?: Partial<ProviderSettings>): ProviderS
     kind,
     model: selectedModel,
     models,
+    modelEmojis,
   };
 }
 
