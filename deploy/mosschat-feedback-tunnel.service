@@ -1,0 +1,17 @@
+[Unit]
+Description=Cloudflare Tunnel for feedback.mosschat.xyz
+After=network-online.target mosschat-feedback.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chengsizhe
+Group=chengsizhe
+ExecStart=/usr/bin/cloudflared --no-autoupdate --config /home/chengsizhe/.cloudflared/mosschat-feedback.yml tunnel run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

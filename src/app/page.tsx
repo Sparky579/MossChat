@@ -996,7 +996,9 @@ function FeedbackDialog({ target, onClose }: { target: FeedbackTarget | null; on
     setSending(true);
     setError("");
     try {
-      const response = await fetch(process.env.NEXT_PUBLIC_FEEDBACK_ENDPOINT || "/feedback", {
+      const officialMossChat = typeof window !== "undefined" && ["mosschat.xyz", "www.mosschat.xyz"].includes(window.location.hostname);
+      const endpoint = process.env.NEXT_PUBLIC_FEEDBACK_ENDPOINT || (officialMossChat ? "https://feedback.mosschat.xyz/feedback" : "/feedback");
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "omit",

@@ -1,0 +1,27 @@
+[Unit]
+Description=MossChat feedback receiver and local archive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=chengsizhe
+Group=chengsizhe
+WorkingDirectory=/home/chengsizhe/ai-chat
+Environment=NODE_ENV=production
+Environment=FEEDBACK_HOST=127.0.0.1
+Environment=FEEDBACK_PORT=4190
+Environment=FEEDBACK_DATA_DIRECTORY=/home/chengsizhe/.local/share/mosschat-feedback/submissions
+Environment=FEEDBACK_DELIVERY_ENDPOINT=https://mosschat.xyz/feedback
+Environment=FEEDBACK_ALLOWED_ORIGINS=https://mosschat.xyz,https://www.mosschat.xyz
+ExecStart=/usr/bin/node /home/chengsizhe/ai-chat/services/feedback-server.mjs
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/chengsizhe/.local/share/mosschat-feedback
+
+[Install]
+WantedBy=multi-user.target

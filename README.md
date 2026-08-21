@@ -97,6 +97,12 @@ Do not rely only on `Access-Control-Allow-Headers: *`: browsers treat `Authoriza
 
 Custom function calling returns a model requested function payload to the conversation. MossChat does not execute arbitrary code or access local system tools.
 
+### Official feedback archive
+
+The official MossChat site posts feedback to `https://feedback.mosschat.xyz/feedback`. That receiver writes every accepted submission to the MossChat host before it relays the optional email notification, so a Resend outage cannot lose feedback. Records are private JSON files in `/home/chengsizhe/.local/share/mosschat-feedback/submissions/`, one file per submission with mode `0600`.
+
+The receiver only accepts browser requests from `https://mosschat.xyz` and `https://www.mosschat.xyz`; `GET /health` is available for an uptime check. Deploy `deploy/mosschat-feedback.service` and `deploy/mosschat-feedback-tunnel.service` after creating the `mosschat-feedback` Cloudflare Tunnel with an ingress route for `feedback.mosschat.xyz`.
+
 ### Advanced request adapters
 
 Most custom gateways differ only in their request path, authentication, thinking fields, or stream shape. MossChat can adapt those differences with **data-only JSON**, without adding a server proxy or executing code from an imported configuration.
