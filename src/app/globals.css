@@ -433,13 +433,13 @@ button:not(:disabled):active { transform: scale(.97); }
 
 .provider-adapter-button, .provider-model-adapter-button { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 10px; border: 1px solid #b7dfc4; border-radius: 15px; color: #157347; background: #eef8f1; cursor: pointer; font-size: 12px; }
 .provider-adapter-button { margin: 4px 0 3px; }
-.provider-model-entry { display: grid; gap: 5px; }
-.provider-model-options { border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
-.provider-model-options > summary { display: flex; min-height: 32px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 9px; color: var(--muted); cursor: pointer; font-size: 12px; list-style: none; }
-.provider-model-options > summary::-webkit-details-marker { display: none; }
-.provider-model-options > summary > span { display: inline-flex; align-items: center; gap: 5px; }
-.provider-model-options > summary > small { color: var(--faint); font-size: 11px; }
-.provider-model-options[open] > summary { color: #157347; border-bottom: 1px solid var(--line); }
+.provider-model-entry { position: relative; }
+.provider-model-row { grid-template-columns: 31px minmax(0, 1fr) 31px 31px; }
+.provider-model-capability-toggle.active { color: #157347; border-color: #9ccfad; background: #e7f5ec; }
+.provider-model-options { position: absolute; z-index: 9; top: calc(100% + 6px); right: 0; display: grid; width: min(480px, calc(100vw - 150px)); border: 1px solid var(--line); border-radius: 11px; background: var(--bg); box-shadow: var(--shadow); }
+.provider-model-options > header { display: flex; min-height: 34px; align-items: center; justify-content: space-between; gap: 8px; padding: 0 9px; border-bottom: 1px solid var(--line); color: #157347; font-size: 12px; }
+.provider-model-options > header > span { display: inline-flex; align-items: center; gap: 5px; }
+.provider-model-options > header > small { color: var(--faint); font-size: 11px; }
 .provider-model-options-body { display: grid; gap: 10px; padding: 9px; }
 .provider-model-options-body > label, .provider-model-levels, .provider-model-capabilities { display: grid; gap: 6px; margin: 0 !important; color: var(--text); font-size: 12px; font-weight: 600; }
 .provider-model-options-body > label > select { min-height: 32px; margin: 0; padding: 4px 8px; font-size: 13px; }
@@ -488,4 +488,5 @@ button:not(:disabled):active { transform: scale(.97); }
   .adapter-dialog header p { max-width: calc(100vw - 128px); }
   .adapter-json-label textarea { min-height: 210px; }
   .adapter-dialog footer { justify-content: space-between; padding: 10px 12px; }
+  .provider-model-options { right: 0; width: min(480px, calc(100vw - 76px)); }
 }

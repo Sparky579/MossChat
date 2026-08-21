@@ -837,8 +837,11 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
   const [emojiPickerProviderId, setEmojiPickerProviderId] = useState<ProviderId | null>(null);
   const [providerJsonMode, setProviderJsonMode] = useState<"import" | "export" | null>(null);
   const [adapterTarget, setAdapterTarget] = useState<AdapterTarget | null>(null);
+  const [modelOptionsTarget, setModelOptionsTarget] = useState<string | null>(null);
   const emojiPickerRef = useRef<HTMLDivElement>(null);
+  const modelOptionsRef = useRef<HTMLDivElement>(null);
   useDismissOnOutside(Boolean(emojiPickerProviderId), emojiPickerRef, () => setEmojiPickerProviderId(null));
+  useDismissOnOutside(Boolean(modelOptionsTarget), modelOptionsRef, () => setModelOptionsTarget(null));
   const isEditingProvider = (id: ProviderId) => editingProviderIds.has(id);
   const setProviderEditing = (id: ProviderId, editing: boolean) => setEditingProviderIds((current) => {
     const next = new Set(current);
@@ -897,19 +900,21 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
   }[capability]);
   const modelOptions = (id: ProviderId, provider: ProviderSettings, model: string, index: number) => {
     if (!model.trim()) return null;
+    const optionKey = `${id}:${index}:${model}`;
+    if (modelOptionsTarget !== optionKey) return null;
     const preference = modelThinkingFor(settings, id, model);
     const customLevels = preference.availableThinkingLevels.filter((level) => !DEFAULT_THINKING_LEVELS.includes(level));
     const modelAdapter = provider.modelAdapters?.[model];
     const providerAdapter = provider.adapter;
-    return <details className="provider-model-options" key={`${id}:${model}:${index}`}>
-      <summary><span><SlidersHorizontal size={14} />{settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"}</span><small>{modelAdapter ? (settings.language === "zh" ? "模型适配器" : "model adapter") : providerAdapter ? (settings.language === "zh" ? "继承入口适配器" : "inherits entry adapter") : (settings.language === "zh" ? "内置协议" : "built-in protocol")}</small></summary>
+    return <div className="provider-model-options" key={`${id}:${model}:${index}`}>
+      <header><span><SlidersHorizontal size={14} />{settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"}</span><small>{modelAdapter ? (settings.language === "zh" ? "模型适配器" : "model adapter") : providerAdapter ? (settings.language === "zh" ? "继承入口适配器" : "inherits entry adapter") : (settings.language === "zh" ? "内置协议" : "built-in protocol")}</small></header>
       <div className="provider-model-options-body">
         <label>{settings.language === "zh" ? "默认思考等级" : "Default thinking"}<select value={preference.defaultThinkingLevel} onChange={(event) => updateModelPreference(id, model, (current) => ({ ...current, defaultThinkingLevel: event.target.value }))}>{preference.availableThinkingLevels.map((level) => <option key={level} value={level}>{thinkingLevelLabel(level, settings.language)}</option>)}</select></label>
         <div className="provider-model-levels"><span>{settings.language === "zh" ? "可选思考等级" : "Available thinking levels"}</span><div className="model-thinking-options">{DEFAULT_THINKING_LEVELS.map((level) => <label key={level}><input type="checkbox" checked={preference.availableThinkingLevels.includes(level)} onChange={(event) => updateModelPreference(id, model, (current) => { const availableThinkingLevels = event.target.checked ? [...current.availableThinkingLevels, level] : current.availableThinkingLevels.filter((item) => item !== level); return { ...current, availableThinkingLevels, defaultThinkingLevel: availableThinkingLevels.includes(current.defaultThinkingLevel) ? current.defaultThinkingLevel : availableThinkingLevels[0] ?? "off" }; })} />{thinkingLevelLabel(level, settings.language)}</label>)}</div><label className="model-custom-levels">{settings.language === "zh" ? "额外等级（逗号分隔）" : "Extra levels (comma-separated)"}<input defaultValue={customLevels.join(", ")} placeholder="minimal, xhigh" onBlur={(event) => updateModelPreference(id, model, (current) => { const extras = [...new Set(event.currentTarget.value.split(",").map((level) => level.trim()).filter(Boolean))]; const standard = current.availableThinkingLevels.filter((level) => DEFAULT_THINKING_LEVELS.includes(level)); const availableThinkingLevels = [...standard, ...extras]; return { ...current, availableThinkingLevels, defaultThinkingLevel: availableThinkingLevels.includes(current.defaultThinkingLevel) ? current.defaultThinkingLevel : availableThinkingLevels[0] ?? "off" }; })} /></label></div>
         <div className="provider-model-capabilities"><span>{settings.language === "zh" ? "此模型支持" : "This model supports"}</span><div>{DEFAULT_PROVIDER_CAPABILITIES.map((capability) => <label key={capability}><input type="checkbox" checked={preference.capabilities?.includes(capability) ?? false} onChange={(event) => updateModelPreference(id, model, (current) => ({ ...current, capabilities: event.target.checked ? [...new Set([...(current.capabilities ?? []), capability])] : (current.capabilities ?? []).filter((item) => item !== capability) }))} />{capabilityLabel(capability)}</label>)}</div></div>
         <button type="button" className="provider-model-adapter-button" onClick={() => setAdapterTarget({ providerId: id, model })}><SlidersHorizontal size={15} />{settings.language === "zh" ? "高级请求适配器（JSON）" : "Advanced request adapter (JSON)"}</button>
       </div>
-    </details>;
+    </div>;
   };
   const addProvider = () => {
     const id = newId("provider");
@@ -956,7 +961,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
               <label>Protocol<select disabled={!editing} value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label>
               <label>{copy.key}<input disabled={!editing} type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label>
               <label>{copy.baseUrl}<input disabled={!editing} value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label>
-              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => <div className="provider-model-entry" key={modelIndex}><div className="provider-model-row"><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => onChange(selectProviderDefaultModel(settings, id, model))}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>{modelOptions(id, provider, model, modelIndex)}</div>)}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
+              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => { const optionKey = `${id}:${modelIndex}:${model}`; return <div className="provider-model-entry" ref={modelOptionsTarget === optionKey ? modelOptionsRef : undefined} key={modelIndex}><div className="provider-model-row"><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => onChange(selectProviderDefaultModel(settings, id, model))}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" className={`provider-model-capability-toggle ${modelOptionsTarget === optionKey ? "active" : ""}`} title={settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"} aria-label={settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"} onClick={() => setModelOptionsTarget((current) => current === optionKey ? null : optionKey)}><SlidersHorizontal size={15} /></button><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>{modelOptions(id, provider, model, modelIndex)}</div>; })}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
             </fieldset>;
           })}
         </>}
