@@ -39,22 +39,6 @@ const trimSlash = (url: string) => url.replace(/\/+$/, "");
 const isOpenRouter = (baseUrl: string) => /(^|\.)openrouter\.ai(?:\/|$)/i.test(trimSlash(baseUrl).replace(/^https?:\/\//, ""));
 const supportsOpenAiUsageStream = (baseUrl: string) => isOpenRouter(baseUrl) || /^https:\/\/api\.openai\.com(?:\/|$)/i.test(trimSlash(baseUrl));
 
-/**
- * A narrowly scoped same-origin relay for a legacy endpoint whose Cloudflare
- * edge blocks CORS preflight requests. Keep this an explicit allowlist: a
- * generic URL relay would become an unsafe public proxy.
- */
-const corsRelayEndpoint = (endpoint: string) => {
-  try {
-    const url = new URL(endpoint);
-    if (url.hostname !== "openai-key.sparky.qzz.io" || !url.pathname.startsWith("/v1/")) return endpoint;
-    const appOrigin = typeof window === "undefined" ? "https://mosschat.xyz" : window.location.origin;
-    return `${appOrigin}/llm/openai-key${url.pathname}${url.search}`;
-  } catch {
-    return endpoint;
-  }
-};
-
 const displayEndpoint = (value: string) => {
   try {
     const url = new URL(value);
@@ -391,9 +375,8 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       let requestEndpoint = "";
       const request = async (endpoint: string, init: RequestInit) => {
         requestEndpoint = endpoint;
-        const transportEndpoint = corsRelayEndpoint(endpoint);
         try {
-          return await fetch(transportEndpoint, init);
+          return await fetch(endpoint, init);
         } catch (cause) {
           if (abortSignal.aborted) throw cause;
           const original = cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause);
@@ -621,7 +604,7 @@ export async function generateChatTitle(settings: AppSettings, prompt: string): 
   if (!provider) return null;
 
   if (provider.kind === "openai") {
-    response = await fetch(corsRelayEndpoint(`${trimSlash(provider.baseUrl)}/chat/completions`), {
+    response = await fetch(`${trimSlash(provider.baseUrl)}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${provider.apiKey}` },
       body: JSON.stringify({
@@ -636,7 +619,7 @@ export async function generateChatTitle(settings: AppSettings, prompt: string): 
   }
 
   if (provider.kind === "anthropic") {
-    response = await fetch(corsRelayEndpoint(`${trimSlash(provider.baseUrl)}/v1/messages`), {
+    response = await fetch(`${trimSlash(provider.baseUrl)}/v1/messages`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -651,7 +634,7 @@ export async function generateChatTitle(settings: AppSettings, prompt: string): 
   }
 
   response = await fetch(
-    corsRelayEndpoint(`${trimSlash(provider.baseUrl)}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`),
+    `${trimSlash(provider.baseUrl)}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
