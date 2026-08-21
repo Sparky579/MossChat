@@ -111,6 +111,8 @@ Open **Settings → API & models**. Each model’s **Model capabilities & thinki
 
 The included presets cover current OpenAI Chat Completions, Anthropic Messages, Gemini GenerateContent, Ollama `/api/chat`, Azure OpenAI deployments, and legacy text completions. The adapter test panel accepts a copied real SSE, NDJSON, JSON-array, or JSON response and shows how many text, reasoning, usage, error, and unrecognized records the mapping produced. Use **Copy generation prompt** if you want an AI coding tool to help make an adapter: it deliberately asks for both official API docs and a real stream sample.
 
+Ready-to-import adapters, legacy compatibility examples, recorded fixtures, and current-model references live in the separate [MossChat Adapter Catalog](https://github.com/Sparky579/MossChat-Adapter). The catalog is tested against MossChat's schema and stream parser before publication.
+
 Here is the small shape used by an adapter:
 
 ```json
