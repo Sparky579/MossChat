@@ -35,6 +35,7 @@ export type SyncSummary = { chats: number; messages: number; notebooks: number; 
 export type SyncDifference = { type: "chat" | "message" | "notebook"; id: string; local: string | null; remote: string | null };
 export type SyncInspection = { state: "empty" | "ready" | "missing-meta"; serverId: string | null; previousServerId: string | null; createdAt: string | null; local: SyncSummary; remote: SyncSummary; common: Pick<SyncSummary, "chats" | "messages" | "notebooks">; conflicts: number; remoteLastWrite: { at: string; deviceId: string; deviceName: string } | null; differences: SyncDifference[]; needsDecision: boolean };
 export type SyncVerification = { state: "empty" | "ready"; serverId: string | null; records: number };
+export type SyncTargetInspection = { hasExistingData: boolean; records: number };
 
 export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", passphraseInitialized: false, deviceId: crypto.randomUUID(), deviceName: "", includeKeys: false });
 
@@ -110,6 +111,10 @@ function serverIdKey(config: SyncConfig) { return `${SERVER_ID_PREFIX}:${configS
 /** Disconnect this browser from a sync server without touching local or remote content. */
 export function clearWebDavSync(config: SyncConfig) {
   localStorage.removeItem(CONFIG_KEY);
+  clearLocalSyncState(config);
+}
+
+function clearLocalSyncState(config: SyncConfig) {
   localStorage.removeItem(indexKey(config));
   localStorage.removeItem(clockKey(config));
   localStorage.removeItem(lastSyncKey(config));
@@ -521,6 +526,32 @@ export async function verifyWebDavSync(config: SyncConfig): Promise<SyncVerifica
     try { await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope); } catch { throw new Error("The encryption passphrase does not match this server."); }
   }
   return { state: "ready", serverId: meta.serverId || null, records: files.length };
+}
+
+/** Verifies endpoint credentials without trying to decrypt an existing sync. */
+export async function inspectWebDavTarget(config: SyncConfig): Promise<SyncTargetInspection> {
+  if (!config.endpoint.trim() || !config.username || !config.password) throw new Error("Enter the WebDAV endpoint, username, and password first.");
+  let entries: string[];
+  try { entries = await listEntries(config); }
+  catch (error) {
+    if (error instanceof TypeError) throw new Error("Could not reach the WebDAV server. Check its URL, HTTPS, and CORS settings.");
+    throw error;
+  }
+  const records = entries.filter((file) => file.endsWith(".bin"));
+  return { hasExistingData: entries.includes(META_FILE) || records.length > 0, records: records.length };
+}
+
+/** Replaces only MossChat's files in this WebDAV directory, then uploads the local data with a new key. */
+export async function replaceWebDavSync({ config, data, settings }: { config: SyncConfig; data: AppData; settings: AppSettings }) {
+  if (!isSyncConfigured(config)) throw new Error("Configure endpoint, WebDAV credentials, and passphrase first.");
+  const entries = await listEntries(config);
+  const targets = entries.filter((file) => file === META_FILE || file.endsWith(".bin"));
+  await Promise.all(targets.map(async (file) => {
+    const response = await request(config, file, { method: "DELETE" });
+    if (!response.ok && response.status !== 404) throw new Error(`Could not remove existing sync data (${response.status}).`);
+  }));
+  clearLocalSyncState(config);
+  return synchronizeWebDav({ config, data, settings, resolution: "prefer-local" });
 }
 
 export async function synchronizeWebDav({ config, data, settings, resolution = "merge" }: { config: SyncConfig; data: AppData; settings: AppSettings; resolution?: SyncResolution }) {

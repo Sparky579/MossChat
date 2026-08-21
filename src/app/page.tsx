@@ -41,7 +41,7 @@ import {
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createBrowserAdapter, generateChatTitle } from "@/providers";
 import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
-import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, saveSyncConfig, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
+import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
 import type { AppData, AppSettings, Chat, Notebook, PromptPreset, ProviderId, ProviderKind, SavedAttachment, SavedMessage, ThinkingLevel } from "@/types";
 
 type Locale = "en" | "zh";
@@ -874,13 +874,14 @@ function SyncConfigEditor({ config, onChange }: { config: SyncConfig; onChange: 
   return <details className="sync-import" open><summary>{isChinese ? "粘贴 SYNC_CONFIG" : "Paste SYNC_CONFIG"}</summary><p>{isChinese ? "可直接粘贴 JSON，也兼容带 SYNC_CONFIG 标记的完整区块。这里和下方字段会即时双向同步。" : "Paste JSON directly, or a complete SYNC_CONFIG block. This editor and the fields below stay in sync instantly."}</p><textarea value={value} onChange={(event) => update(event.target.value)} placeholder="{}" spellCheck={false} aria-label="SYNC_CONFIG JSON" />{error && <p className="sync-import-error" role="alert">{error}</p>}</details>;
 }
 
-function SyncDialog({ config, onSave, onClear, onClose }: { config: SyncConfig; onSave: (config: SyncConfig) => void; onClear: () => void; onClose: () => void }) {
+function SyncDialog({ config, onSave, onOverwrite, onClear, onClose }: { config: SyncConfig; onSave: (config: SyncConfig) => void; onOverwrite: (config: SyncConfig) => Promise<void>; onClear: () => void; onClose: () => void }) {
   const locale = useContext(LocaleContext);
   const [draft, setDraft] = useState(config);
   const [setupMode, setSetupMode] = useState<"new" | "join" | null>(null);
   const [generatedPassphrase, setGeneratedPassphrase] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [verification, setVerification] = useState<{ ok: boolean; text: string } | null>(null);
+  const [overwriteTarget, setOverwriteTarget] = useState<SyncConfig | null>(null);
   const { copied, copyText, copiedLabel } = useCopyFeedback();
   const isChinese = locale === "zh";
   const existingSync = config.passphraseInitialized;
@@ -1031,11 +1032,28 @@ If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix
     setChecking(true);
     setVerification(null);
     try {
-      await verifyWebDavSync(next);
+      if (setupMode === "new") {
+        const target = await inspectWebDavTarget(next);
+        if (target.hasExistingData) {
+          setOverwriteTarget(next);
+          return;
+        }
+      } else await verifyWebDavSync(next);
       onSave(next);
       setGeneratedPassphrase(null);
       onClose();
     } catch (error) { setVerification({ ok: false, text: verificationMessage(error) }); }
+    finally { setChecking(false); }
+  };
+  const overwrite = async () => {
+    if (!overwriteTarget) return;
+    setChecking(true);
+    setVerification(null);
+    try {
+      await onOverwrite(overwriteTarget);
+      setGeneratedPassphrase(null);
+      onClose();
+    } catch (error) { setVerification({ ok: false, text: verificationMessage(error) }); setOverwriteTarget(null); }
     finally { setChecking(false); }
   };
   const clear = () => { onClear(); onClose(); };
@@ -1057,7 +1075,6 @@ If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix
             <label>{isChinese ? "设备名称" : "Device name"}<input autoComplete="off" placeholder={isChinese ? "例如 work-laptop" : "e.g. work-laptop"} value={draft.deviceName} onChange={(event) => setDraft({ ...draft, deviceName: event.target.value })} /></label>
             <section className="sync-first"><strong>{setupMode === "join" ? (isChinese ? "加入已有同步" : "Join existing sync") : (isChinese ? "第一次设置" : "First-time setup")}</strong><p>{setupMode === "join" ? (isChinese ? "填入已有服务器首次保存的加密口令。保存前会验证服务器、凭据和口令。" : "Enter the passphrase saved during first setup. The server, credentials, and passphrase are verified before saving.") : (isChinese ? "可手动设置加密口令，也可让 MossChat 本地生成。保存前会验证服务器连接和凭据。" : "Set a passphrase yourself or generate one locally. The server connection and credentials are verified before saving.")}</p><label>{isChinese ? "加密口令" : "Encryption passphrase"}<input type="password" autoComplete="new-password" value={draft.passphrase} onChange={(event) => { setDraft({ ...draft, passphrase: event.target.value }); setGeneratedPassphrase(null); }} /></label>{setupMode === "new" && <button type="button" onClick={generate}>{isChinese ? "生成加密口令" : "Generate passphrase"}</button>}{generatedPassphrase && <><code>{generatedPassphrase}</code><button type="button" className={copied === "passphrase" ? "is-copied" : ""} onClick={() => copy(generatedPassphrase, "passphrase")}>{copied === "passphrase" ? copiedLabel : (isChinese ? "复制口令" : "Copy passphrase")}</button></>}</section>
             <label className="sync-toggle"><input type="checkbox" checked={draft.includeKeys} onChange={(event) => setDraft({ ...draft, includeKeys: event.target.checked })} />{isChinese ? "同步 API keys" : "Sync API keys"}</label>
-            {draft.includeKeys && <p className="sync-warning">{isChinese ? "API keys 会先加密再上传。请使用足够长且独特的口令。" : "API keys are encrypted before upload. Use a long, unique passphrase."}</p>}
             {verification && <p className={verification.ok ? "sync-verify-ok" : "sync-import-error"}>{verification.text}</p>}
             <div className="sync-config-actions"><button type="button" className="text-button" onClick={() => void save()} disabled={checking}>{checking ? (isChinese ? "检测中…" : "Checking…") : (isChinese ? "验证并保存" : "Verify & save")}</button></div>
           </>}
@@ -1065,6 +1082,7 @@ If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix
         {!existingSync && <section className="sync-guide"><h3>{isChinese ? "同步教程" : "Sync server guide"}</h3><p>{isChinese ? "需要 HTTPS，且 OPTIONS 必须在 Basic Auth 之前返回 204。" : "Use HTTPS. OPTIONS must return 204 before Basic Auth runs."}</p><details open><summary>{isChinese ? "给人的 Caddy 配置" : "Caddy setup"}</summary><pre>{caddyfile}</pre><button className={copied === "caddy" ? "is-copied" : ""} type="button" onClick={() => copy(caddyfile, "caddy")}>{copied === "caddy" ? copiedLabel : (isChinese ? "复制 Caddyfile" : "Copy Caddyfile")}</button></details><details><summary>{isChinese ? "给 Agent 的一键配置任务" : "One click task for an agent"}</summary><p>{isChinese ? "内容包括 Cloudflare Tunnel 优先、Docker 或 Caddy 回退、最后使用 Tailscale、验证和可直接导入的配置结果。" : "Uses an existing Cloudflare Tunnel first, then Docker or Caddy, and Tailscale only as a final fallback."}</p><pre className="agent-task-preview">{agentTask}</pre><button className={copied === "agent" ? "is-copied" : ""} type="button" onClick={() => copy(agentTask, "agent")}>{copied === "agent" ? copiedLabel : (isChinese ? "复制 Agent 任务" : "Copy agent task")}</button></details></section>}
       </div>
     </section>
+    {overwriteTarget && <div className="modal-backdrop sync-overwrite-backdrop" onMouseDown={(event) => { event.stopPropagation(); if (!checking) setOverwriteTarget(null); }}><section className="sync-review-dialog" role="alertdialog" aria-modal="true" aria-label={isChinese ? "覆盖远程同步数据" : "Overwrite remote sync data"} onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "远程已有同步数据" : "Remote sync data already exists"}</h2></div><button className="icon-button" type="button" disabled={checking} onClick={() => setOverwriteTarget(null)}><X /></button></header><div className="sync-review-body"><p className="sync-review-warning">{isChinese ? "此操作会覆盖远程的已有数据。" : "This will overwrite the existing remote data."}</p><p>{isChinese ? "确认后，MossChat 会删除此目录中已有的同步记录，以当前本地数据重新上传，并使用你刚填写的新加密口令。其他设备需要用新口令重新加入。" : "After confirmation, MossChat will replace this directory's sync records with the current local data and the new passphrase. Other devices must rejoin with the new passphrase."}</p></div><footer><button type="button" className="sync-review-cancel" disabled={checking} onClick={() => setOverwriteTarget(null)}>{isChinese ? "取消" : "Cancel"}</button><button type="button" className="text-button" disabled={checking} onClick={() => void overwrite()}>{checking ? (isChinese ? "覆盖中…" : "Overwriting…") : (isChinese ? "确认覆盖" : "Overwrite")}</button></footer></section></div>}
   </div>;
 }
 
@@ -1215,6 +1233,29 @@ export default function Home() {
     setSyncStatus("idle");
     setSyncMessage(settings.language === "zh" ? "已清除同步连接。本地数据未删除。" : "Sync connection cleared. Local data was not deleted.");
     autoSyncSignature.current = "";
+  };
+  const overwriteRemoteSync = async (next: SyncConfig) => {
+    const localData = dataRef.current;
+    const localSettings = settingsRef.current;
+    setSyncStatus("syncing");
+    setSyncMessage("");
+    try {
+      const result = await replaceWebDavSync({ config: next, data: localData, settings: localSettings });
+      setData(result.data);
+      await replaceData(result.data);
+      setSettings(normalizeSettings(result.settings));
+      setSyncConfig(next);
+      saveSyncConfig(next);
+      setLastSyncAt(result.syncedAt);
+      setSyncNow(Date.now());
+      setSyncStatus("done");
+      setSyncMessage(settings.language === "zh" ? "已覆盖远程同步数据，并使用新口令重新加密。" : "Remote sync data was replaced and encrypted with the new passphrase.");
+      autoSyncSignature.current = "";
+    } catch (error) {
+      setSyncStatus("error");
+      setSyncMessage(error instanceof Error ? error.message : "Sync failed.");
+      throw error;
+    }
   };
   const runSync = useCallback(async (resolution?: SyncResolution) => {
     if (!isSyncConfigured(syncConfig) || syncRunning.current) return false;
@@ -1601,7 +1642,7 @@ export default function Home() {
     {promptTarget && promptTargetItem && <PromptDialog key={`${promptTarget.scope}:${promptTarget.id}`} target={promptTargetItem} scope={promptTarget.scope} settings={settings} onChange={setSettings} onSavePrompt={(prompt) => { if (promptTarget.scope === "chat") saveChatSystemPrompt(promptTarget.id, prompt); else saveNotebookSystemPrompt(promptTarget.id, prompt); }} onClose={() => setPromptTarget(null)} />}
     {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
     {installGuideOpen && <InstallDialog onClose={() => setInstallGuideOpen(false)} />}
-    {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onClear={clearSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
+    {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onOverwrite={overwriteRemoteSync} onClear={clearSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
     {syncReview && <SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={(resolution) => { setSyncReview(null); void runSync(resolution); }} />}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;
