@@ -190,7 +190,7 @@ button { color: inherit; }
 .message-content { display: flex; align-items: flex-start; gap: 12px; }
 .assistant-avatar { width: 27px; height: 27px; margin-top: 1px; color: #198754; background: #e7f5ec; }
 .message-assistant.has-thinking .assistant-avatar { margin-top: 7px; }
-.user-bubble { max-width: min(81%, 620px); margin-left: auto; padding: 10px 16px; border-radius: 21px 21px 5px 21px; background: var(--surface-2); }
+.user-bubble { max-width: min(81%, 620px); margin-left: auto; padding: 10px 16px; border-radius: 18px; background: var(--surface-2); }
 .assistant-copy { min-width: 0; max-width: 100%; padding: 1px 5px 0 0; }
 .markdown { color: var(--text); font-size: 16px; line-height: 1.68; overflow-wrap: anywhere; }
 .markdown > :first-child { margin-top: 0; }
