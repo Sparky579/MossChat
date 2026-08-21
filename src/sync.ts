@@ -523,11 +523,12 @@ export async function verifyWebDavSync(config: SyncConfig): Promise<SyncVerifica
   if (!meta) return { state: "empty", serverId: null, records: 0 };
   const key = await encryptionKey(config.passphrase, base64ToBytes(meta.salt));
   const files = entries.filter((file) => file.endsWith(".bin"));
-  if (files[0]) {
-    const response = await request(config, files[0]);
+  await Promise.all(files.map(async (file) => {
+    const response = await request(config, file);
     if (!response.ok) throw new Error(`Could not read a sync record (${response.status}).`);
-    try { await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope); } catch { throw new Error("The encryption passphrase does not match this server."); }
-  }
+    try { await decrypt<SyncRecord>(key, await response.json() as EncryptedEnvelope); }
+    catch { throw new Error("The encryption passphrase does not match this server."); }
+  }));
   return { state: "ready", serverId: meta.serverId || null, records: files.length };
 }
 
