@@ -19,6 +19,8 @@ type FeedbackPayload = {
 
 const feedbackMailbox = "shantayreynar@gmail.com";
 const maxRequestBytes = 32 * 1024;
+const relayPrefix = "/llm/openai-key";
+const relayUpstream = "https://openai-key.sparky.qzz.io";
 
 class RequestBodyTooLargeError extends Error {}
 
@@ -26,7 +28,7 @@ function headers(origin: string) {
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type",
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
@@ -56,6 +58,34 @@ function validEmail(value: string) {
 
 function field(label: string, value: string) {
   return `<p><strong>${escapeHtml(label)}:</strong><br>${escapeHtml(value || "Not provided").replace(/\n/g, "<br>")}</p>`;
+}
+
+async function relayOpenAi(request: Request, url: URL, origin: string) {
+  const suffix = url.pathname.slice(relayPrefix.length);
+  if (request.method !== "POST") return json({ error: "Method not allowed." }, 405, origin);
+  if (!suffix.startsWith("/v1/")) return json({ error: "Only /v1 API paths are allowed." }, 404, origin);
+
+  const upstreamHeaders = new Headers(request.headers);
+  for (const name of ["host", "origin", "referer", "content-length", "cf-connecting-ip", "x-forwarded-for", "x-real-ip"]) upstreamHeaders.delete(name);
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(new URL(`${suffix}${url.search}`, relayUpstream), {
+      method: "POST",
+      headers: upstreamHeaders,
+      body: request.body,
+      redirect: "manual",
+    });
+  } catch {
+    return json({ error: "The upstream API could not be reached through the MossChat relay." }, 502, origin);
+  }
+
+  const responseHeaders = new Headers(headers(origin));
+  for (const name of ["content-type", "cache-control", "retry-after", "x-request-id", "x-ratelimit-limit-requests", "x-ratelimit-remaining-requests"]) {
+    const value = upstream.headers.get(name);
+    if (value) responseHeaders.set(name, value);
+  }
+  return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: responseHeaders });
 }
 
 /** Enforces the limit even when a client omits or lies about Content-Length. */
@@ -89,9 +119,15 @@ export default {
     const requestOrigin = request.headers.get("Origin");
     if (requestOrigin && !origins.includes(requestOrigin)) return new Response("Forbidden", { status: 403 });
     const origin = requestOrigin || origins[0];
+    const url = new URL(request.url);
+    const isRelay = url.pathname === relayPrefix || url.pathname.startsWith(`${relayPrefix}/`);
+
+    // The relay is intentionally browser-only; it is not a generic public proxy.
+    if (isRelay && (!requestOrigin || !origins.includes(requestOrigin))) return new Response("Forbidden", { status: 403 });
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(origin) });
-    if (new URL(request.url).pathname !== "/feedback") return json({ error: "Not found" }, 404, origin);
+    if (isRelay) return relayOpenAi(request, url, origin);
+    if (url.pathname !== "/feedback") return json({ error: "Not found" }, 404, origin);
     if (request.method !== "POST") return json({ error: "Method not allowed" }, 405, origin);
     if ((Number(request.headers.get("Content-Length")) || 0) > maxRequestBytes) return json({ error: "Feedback is too large." }, 413, origin);
 

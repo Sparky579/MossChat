@@ -12,5 +12,13 @@ zone_name = "mosschat.xyz"
 pattern = "www.mosschat.xyz/feedback"
 zone_name = "mosschat.xyz"
 
+[[routes]]
+pattern = "mosschat.xyz/llm/openai-key/*"
+zone_name = "mosschat.xyz"
+
+[[routes]]
+pattern = "www.mosschat.xyz/llm/openai-key/*"
+zone_name = "mosschat.xyz"
+
 [vars]
 ALLOWED_ORIGINS = "https://mosschat.xyz,https://www.mosschat.xyz"
