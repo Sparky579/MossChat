@@ -267,6 +267,7 @@ button { color: inherit; }
 .provider-json-dialog h2 { margin: 0; color: var(--text); font-size: 20px; }
 .provider-json-body { display: grid; min-height: 0; gap: 12px; overflow: auto; padding: 19px 20px; }
 .provider-json-body > p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.provider-json-examples { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }.provider-json-examples > span { margin-right: 3px; color: var(--muted); font-size: 12px; }.provider-json-examples button { min-height: 29px; padding: 0 10px; border: 1px solid #b7dfc4; border-radius: 15px; color: #157347; background: #eef8f1; cursor: pointer; font-size: 12px; }.provider-json-examples button:hover { color: #0d5f38; border-color: #8fcba2; background: #e1f4e7; }
 .provider-json-body > textarea { width: 100%; min-height: 220px; padding: 11px; border: 1px solid var(--line); border-radius: 10px; outline-color: #198754; color: var(--text); background: var(--surface); font: 12px/1.5 var(--font-mono), monospace; resize: vertical; }
 .provider-json-error { color: #b3261e !important; }
 .provider-json-preview { display: grid; gap: 8px; padding: 11px; border: 1px solid #b7dfc4; border-radius: 11px; background: #f0f9f3; }

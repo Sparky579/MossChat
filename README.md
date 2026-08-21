@@ -55,6 +55,44 @@ npm run start
 
 Open `http://localhost:3000`, then add a provider under **Settings → API & models**. The production app is served by Next.js, so keep the Node process running behind your preferred reverse proxy or process manager.
 
+### Provider JSON examples
+
+In **Settings → API & models → Add by JSON**, use the OpenAI, Anthropic, or Gemini sample buttons to fill the same portable provider shape. Replace only `apiKey` and the model IDs you can access; no key is included in these examples.
+
+```json
+[
+  {
+    "name": "OpenAI",
+    "emoji": "✨",
+    "kind": "openai",
+    "apiKey": "",
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "models": ["gpt-4o-mini", "gpt-image-2"]
+  },
+  {
+    "name": "Anthropic",
+    "emoji": "🧠",
+    "kind": "anthropic",
+    "apiKey": "",
+    "baseUrl": "https://api.anthropic.com",
+    "model": "claude-sonnet-4-20250514",
+    "models": ["claude-sonnet-4-20250514"]
+  },
+  {
+    "name": "Google Gemini",
+    "emoji": "✨",
+    "kind": "google",
+    "apiKey": "",
+    "baseUrl": "https://generativelanguage.googleapis.com",
+    "model": "gemini-2.5-flash",
+    "models": ["gemini-2.5-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"]
+  }
+]
+```
+
+For a native Gemini provider, the Base URL is the API origin only: do not append `/models`, a model name, or a MossChat page URL. MossChat adds the required `/v1/models/{model}:generateContent` route itself.
+
 ## Data and privacy
 
 API keys and preferences are stored in `localStorage`. Chats, messages, notebooks, and attachments are stored in IndexedDB. The app has no API route that receives your conversation data or provider keys.
@@ -107,7 +145,7 @@ The receiver only accepts browser requests from `https://mosschat.xyz` and `http
 
 Most custom gateways differ only in their request path, authentication, thinking fields, or stream shape. MossChat can adapt those differences with **data-only JSON**, without adding a server proxy or executing code from an imported configuration.
 
-Open **Settings → API & models**. Each model’s **Model capabilities & thinking** panel controls the normal things in the UI: the default and available thinking levels, plus Streaming, Reasoning, Images, PDF, and Tools support. The **Advanced request adapter** button is for the uncommon wire-format details. A provider-level adapter is the default for all of its models; a model adapter overrides it; without either, MossChat continues using its built-in OpenAI, Claude, or Gemini implementation.
+Open **Settings → API & models**. Each model’s **Model capabilities & thinking** panel controls the normal things in the UI: the default and available thinking levels, plus Streaming, Reasoning, Images, Image generation, PDF, and Tools support. The **Advanced request adapter** button is for the uncommon wire-format details. A provider-level adapter is the default for all of its models; a model adapter overrides it; without either, MossChat continues using its built-in OpenAI, Claude, or Gemini implementation.
 
 The included presets cover current OpenAI Chat Completions, Anthropic Messages, Gemini GenerateContent, Ollama `/api/chat`, Azure OpenAI deployments, and legacy text completions. The adapter test panel accepts a copied real SSE, NDJSON, JSON-array, or JSON response and shows how many text, reasoning, usage, error, and unrecognized records the mapping produced. Use **Copy generation prompt** if you want an AI coding tool to help make an adapter: it deliberately asks for both official API docs and a real stream sample.
 

@@ -85,6 +85,23 @@ const providerFailure = ({ language, provider, endpoint, summary, details }: {
   ].join("\n\n");
 };
 
+/** A gateway homepage or app shell is never a valid provider response. Keep this diagnosis protocol-neutral. */
+const httpFailureSummary = (response: Response, details: string, language: AppSettings["language"]) => {
+  const html = /(?:^|\n)\s*<!doctype html|<html[\s>]/i.test(details) || /(?:^|\s)text\/html(?:;|$)/i.test(response.headers.get("content-type") ?? "");
+  return [
+    `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+    ...(html ? [language === "zh"
+      ? "该地址返回了 HTML 页面而不是模型 API JSON；请检查 Base URL、路径版本和反向代理路由。"
+      : "This address returned an HTML page instead of model API JSON. Check the Base URL, path version, and reverse-proxy route."] : []),
+  ].join("\n");
+};
+
+/** The stable Gemini REST path is v1. Respect an explicitly configured v1beta base for compatible gateways. */
+const googleApiBase = (baseUrl: string) => {
+  const base = trimSlash(baseUrl);
+  return /\/v1(?:beta)?$/i.test(base) ? base : `${base}/v1`;
+};
+
 const thinkingBudget = (settings: AppSettings): number | null => {
   if (settings.thinkingLevel === "custom") return settings.thinkingBudget > 0 ? settings.thinkingBudget : null;
   const presetBudget: Record<string, number | null> = { off: null, low: 1024, medium: 2048, high: 4096 };
@@ -233,7 +250,7 @@ const parsedImageResponse = async (response: Response, settings: AppSettings, pr
       language: settings.language,
       provider,
       endpoint,
-      summary: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+      summary: httpFailureSummary(response, details, settings.language),
       details,
     }));
   }
@@ -306,8 +323,7 @@ export async function generateBrowserImages(settings: AppSettings, { messages, a
     return { images, text: entries.map((entry) => entry && typeof entry === "object" && typeof (entry as Record<string, unknown>).revised_prompt === "string" ? String((entry as Record<string, unknown>).revised_prompt) : "").filter(Boolean).join("\n"), usage };
   }
 
-  const base = trimSlash(provider.baseUrl);
-  const apiBase = /\/v1(?:beta)?$/i.test(base) ? base : `${base}/v1`;
+  const apiBase = googleApiBase(provider.baseUrl);
   const endpoint = `${apiBase}/models/${encodeURIComponent(provider.model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`;
   const response = await imageRequest({
     endpoint,
@@ -757,7 +773,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           }),
         });
       } else {
-        const endpoint = `${trimSlash(provider.baseUrl)}/v1beta/models/${encodeURIComponent(provider.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
+        const endpoint = `${googleApiBase(provider.baseUrl)}/models/${encodeURIComponent(provider.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(provider.apiKey)}`;
         const tools = googleTools(declarations);
         response = await request(endpoint, {
           method: "POST",
@@ -784,7 +800,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           language: settings.language,
           provider,
           endpoint: requestEndpoint,
-          summary: `HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ""}`,
+          summary: httpFailureSummary(response, details, settings.language),
           details,
         }));
       }
@@ -1077,7 +1093,7 @@ export async function generateChatTitle(settings: AppSettings, prompt: string): 
   }
 
   response = await fetch(
-    `${trimSlash(provider.baseUrl)}/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`,
+    `${googleApiBase(provider.baseUrl)}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(provider.apiKey)}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
