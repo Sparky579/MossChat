@@ -53,7 +53,7 @@ export const ADAPTER_PRESETS: Record<AdapterBase, AdapterConfig> = {
       doneWhen: "[DONE]",
       events: {
         text: [{ extract: "$.choices[0].delta.content" }, { when: "$.type == 'response.output_text.delta'", extract: "$.delta" }],
-        reasoning: [{ extract: "$.choices[0].delta.reasoning_content" }, { extract: "$.choices[0].delta.reasoning" }, { when: "$.type == 'response.reasoning_text.delta'", extract: "$.delta" }],
+        reasoning: [{ extract: "$.choices[0].delta.reasoning_content" }, { extract: "$.choices[0].delta.reasoning" }, { when: "$.type == 'response.reasoning_text.delta'", extract: "$.delta" }, { when: "$.type == 'response.reasoning_summary_text.delta'", extract: "$.delta" }],
         toolCall: [{ extract: "$.choices[0].delta.tool_calls[*]" }],
         usage: [{ extract: "$.usage" }, { extract: "$.response.usage" }],
         error: [{ when: "$.type == 'error'", extract: "$.error.message" }],
@@ -71,13 +71,13 @@ export const ADAPTER_PRESETS: Record<AdapterBase, AdapterConfig> = {
     extraHeaders: { "anthropic-version": "2023-06-01" },
     request: {
       messageFormat: "anthropic",
-      body: { model: "{{model}}", stream: true, max_tokens: "{{maxTokens}}", system: "{{system}}", messages: "{{messages.anthropic}}", tools: "{{tools.anthropic}}", thinking: "{{thinking.anthropic}}" },
+      body: { model: "{{model}}", stream: true, max_tokens: "{{maxTokens}}", system: "{{system}}", messages: "{{messages.anthropic}}", tools: "{{tools.anthropic}}", thinking: "{{thinking.anthropic}}", output_config: "{{thinking.anthropicOutputConfig}}" },
     },
     stream: {
       format: "sse",
       events: {
         text: [{ when: "$.type == 'content_block_delta' && $.delta.type == 'text_delta'", extract: "$.delta.text" }],
-        reasoning: [{ when: "$.type == 'content_block_delta' && $.delta.type == 'thinking_delta'", extract: "$.delta.thinking" }],
+        reasoning: [{ when: "$.type == 'content_block_start' && $.content_block.type == 'thinking'", extract: "$.content_block.thinking" }, { when: "$.type == 'content_block_delta' && $.delta.type == 'thinking_delta'", extract: "$.delta.thinking" }],
         usage: [{ when: "$.type == 'message_delta'", extract: "$.usage" }, { when: "$.type == 'message_start'", extract: "$.message.usage" }],
         error: [{ when: "$.type == 'error'", extract: "$.error.message" }],
       },
@@ -98,8 +98,8 @@ export const ADAPTER_PRESETS: Record<AdapterBase, AdapterConfig> = {
     stream: {
       format: "sse",
       events: {
-        text: [{ when: "$.candidates[0].content.parts[0].thought != true", extract: "$.candidates[0].content.parts[*].text" }],
-        reasoning: [{ when: "$.candidates[0].content.parts[0].thought == true", extract: "$.candidates[0].content.parts[*].text" }],
+        text: [{ extract: "$.candidates[0].content.parts[?(@.thought != true)].text" }],
+        reasoning: [{ extract: "$.candidates[0].content.parts[?(@.thought == true)].text" }],
         toolCall: [{ extract: "$.candidates[0].content.parts[*].functionCall" }],
         usage: [{ extract: "$.usageMetadata" }],
         error: [{ extract: "$.error.message" }],
@@ -107,7 +107,7 @@ export const ADAPTER_PRESETS: Record<AdapterBase, AdapterConfig> = {
     },
     response: { text: "$.candidates[0].content.parts[*].text", usage: "$.usageMetadata", error: "$.error.message" },
     capabilities: ["streaming", "reasoning", "vision", "pdf", "tools"],
-    thinking: { allowed: ["off", "minimal", "low", "medium", "high", "custom"] },
+    thinking: { allowed: ["off", "minimal", "low", "medium", "high", "xhigh", "max", "custom"] },
   },
   "ollama-chat": {
     schema: 1,
@@ -236,16 +236,30 @@ export function configuredAdapter(provider: ProviderSettings, model: string): Ad
 
 type JsonValue = string | number | boolean | null | Record<string, unknown> | JsonValue[];
 
-/** A deliberately small JSONPath reader: $, .property, [0] and [*]. */
+/** A deliberately small JSONPath reader: $, .property, [0], [*], plus a
+ * primitive array-item filter such as [?(@.thought == true)]. */
 export function readAdapterPath(value: unknown, path: string): unknown[] {
   if (!path.startsWith("$")) return [];
-  const tokens = path.slice(1).match(/(?:\.([A-Za-z0-9_-]+)|\[([0-9*]+)\])/g) ?? [];
+  let remaining = path.slice(1);
+  const tokens: string[] = [];
+  while (remaining) {
+    const token = /^(?:\.[A-Za-z0-9_-]+|\[[0-9*]+\]|\[\?\(@\.[A-Za-z0-9_-]+\s*(?:==|!=)\s*(?:true|false|null|-?\d+(?:\.\d+)?|'[^']*'|\"[^\"]*\")\)\])/.exec(remaining)?.[0];
+    if (!token) return [];
+    tokens.push(token);
+    remaining = remaining.slice(token.length);
+  }
   let values: unknown[] = [value];
   for (const token of tokens) {
     const property = /^\.([A-Za-z0-9_-]+)$/.exec(token)?.[1];
     const index = /^\[([0-9*]+)\]$/.exec(token)?.[1];
+    const filter = /^\[\?\(@\.([A-Za-z0-9_-]+)\s*(==|!=)\s*(.*?)\)\]$/.exec(token);
     values = values.flatMap((current) => {
       if (property) return isObject(current) && property in current ? [current[property]] : [];
+      if (filter) {
+        const [, key, operator, literal] = filter;
+        const target = parseLiteral(literal);
+        return Array.isArray(current) ? current.filter((item) => isObject(item) && (operator === "==" ? item[key] === target : item[key] !== target)) : [];
+      }
       if (index === "*") return Array.isArray(current) ? current : [];
       const numeric = Number(index);
       return Array.isArray(current) && Number.isInteger(numeric) && numeric in current ? [current[numeric]] : [];
@@ -337,5 +351,5 @@ export function parseAdapterFixture(adapter: AdapterConfig, raw: string): Adapte
 }
 
 export function adapterGenerationPrompt(base: AdapterBase, providerName: string, model?: string) {
-  return `# Task: generate a MossChat request adapter\n\nTarget: ${providerName}${model ? ` / ${model}` : ""}\nBase: ${base}\n\nBefore writing JSON, ask for the official API documentation and one real raw streaming response. Do not guess undocumented stream fields.\n\nReturn one data-only JSON object. Never include JavaScript, an absolute URL, API key, Authorization header, or Cookie. Endpoint paths must be relative to the configured Base URL. Use \"extends\": \"${base}\" and override only what differs.\n\nSupported stream formats: sse, ndjson (Ollama uses done: true), json-array, text. Map text/reasoning/toolCall/usage/error with JSON paths. The UI accepts only $, .property, [0], and [*]. toolCall must extract a complete call object, not a partial argument delta.\n\nTemplate values allowed in request.body: {{model}}, {{stream}}, {{system}}, {{system.gemini}}, {{messages.openai}}, {{messages.anthropic}}, {{messages.gemini}}, {{tools.openai}}, {{tools.anthropic}}, {{tools.gemini}}, {{prompt}}, {{thinking.effort}}, {{thinking.anthropic}}, {{thinking.gemini}}, {{maxTokens}}.\n\nInclude capabilities (streaming, reasoning, vision, pdf, tools, image-generation) and thinking.allowed. Then validate the mapping line by line against the supplied real stream and list unmapped lines.\n\n===ADAPTER_START===\n${JSON.stringify(adapterPreset(base), null, 2)}\n===ADAPTER_END===`;
+  return `# Task: generate a MossChat request adapter\n\nTarget: ${providerName}${model ? ` / ${model}` : ""}\nBase: ${base}\n\nBefore writing JSON, ask for the official API documentation and one real raw streaming response. Do not guess undocumented stream fields.\n\nReturn one data-only JSON object. Never include JavaScript, an absolute URL, API key, Authorization header, or Cookie. Endpoint paths must be relative to the configured Base URL. Use \"extends\": \"${base}\" and override only what differs.\n\nSupported stream formats: sse, ndjson (Ollama uses done: true), json-array, text. Map text/reasoning/toolCall/usage/error with JSON paths. The UI accepts $, .property, [0], [*], and safe item filters such as [?(@.thought == true)]. toolCall must extract a complete call object, not a partial argument delta.\n\nTemplate values allowed in request.body: {{model}}, {{stream}}, {{system}}, {{system.gemini}}, {{messages.openai}}, {{messages.anthropic}}, {{messages.gemini}}, {{tools.openai}}, {{tools.anthropic}}, {{tools.gemini}}, {{prompt}}, {{thinking.effort}}, {{thinking.anthropic}}, {{thinking.anthropicOutputConfig}}, {{thinking.gemini}}, {{maxTokens}}.\n\nInclude capabilities (streaming, reasoning, vision, pdf, tools, image-generation) and thinking.allowed. Then validate the mapping line by line against the supplied real stream and list unmapped lines.\n\n===ADAPTER_START===\n${JSON.stringify(adapterPreset(base), null, 2)}\n===ADAPTER_END===`;
 }

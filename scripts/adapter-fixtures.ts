@@ -18,7 +18,7 @@ const fixtures: Fixture[] = [
   {
     name: "Gemini GenerateContent SSE",
     preset: "gemini-generate-content",
-    raw: "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"Plan\"}]}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2}}\n\n",
+    raw: "data: {\"candidates\":[{\"content\":{\"parts\":[{\"thought\":true,\"text\":\"Plan\"},{\"text\":\"Hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":4,\"candidatesTokenCount\":2}}\n\n",
     expected: { text: 1, reasoning: 1, usage: 1 },
   },
   {

@@ -121,6 +121,54 @@ const openRouterReasoning = (settings: AppSettings, budget: number | null) => {
     : { effort: settings.thinkingLevel };
 };
 
+/** Gemini 3+ uses a level, while Gemini 2.5 and earlier use a token budget.
+ * Both need includeThoughts in order to return the thought parts we render. */
+const geminiThinkingConfig = (settings: AppSettings, budget: number | null, model: string) => {
+  if (settings.thinkingLevel === "off") return undefined;
+  const selected = settings.thinkingLevel.toLowerCase();
+  const fromBudget = (value: number | null) => value !== null && value <= 1024 ? "LOW" : value !== null && value >= 4096 ? "HIGH" : "MEDIUM";
+  const level = selected === "custom"
+    ? fromBudget(budget)
+    : ({ minimal: "MINIMAL", low: "LOW", medium: "MEDIUM", high: "HIGH", xhigh: "HIGH", max: "HIGH" } as Record<string, string>)[selected] ?? "MEDIUM";
+  const modernGemini = /^gemini-(?:3|4)(?:[.-]|$)/i.test(model.trim());
+  return {
+    thinkingConfig: {
+      includeThoughts: true,
+      ...(modernGemini ? { thinkingLevel: level } : { thinkingBudget: Math.max(0, budget ?? 2048) }),
+    },
+  };
+};
+
+/** Claude 4.6+ uses adaptive thinking + output_config.effort. Older Claude 4
+ * models retain the documented budget-based thinking form. */
+const supportsAdaptiveClaudeThinking = (model: string) => {
+  const match = /claude-(?:opus|sonnet|haiku)-(\d+)(?:-(\d{1,2})(?:-|$))?/i.exec(model);
+  if (!match) return true;
+  const major = Number(match[1]);
+  const minor = Number(match[2] ?? 0);
+  return major > 4 || (major === 4 && minor >= 6);
+};
+
+const anthropicEffort = (settings: AppSettings, budget: number | null) => {
+  const level = settings.thinkingLevel.toLowerCase();
+  if (level === "off") return undefined;
+  if (level === "custom") return budget !== null && budget <= 1024 ? "low" : budget !== null && budget >= 8192 ? "max" : budget !== null && budget >= 4096 ? "high" : "medium";
+  if (level === "minimal") return "low";
+  return (["low", "medium", "high", "xhigh", "max"] as const).includes(level as "low" | "medium" | "high" | "xhigh" | "max") ? level : "medium";
+};
+
+const anthropicThinkingConfig = (settings: AppSettings, budget: number | null, model: string) => {
+  if (settings.thinkingLevel === "off") return undefined;
+  if (!supportsAdaptiveClaudeThinking(model)) {
+    return { thinking: { type: "enabled", budget_tokens: Math.max(1024, budget ?? 2048), display: "summarized" }, outputConfig: undefined };
+  }
+  const effort = anthropicEffort(settings, budget);
+  return {
+    thinking: { type: "adaptive", display: "summarized" },
+    ...(effort ? { outputConfig: { effort } } : {}),
+  };
+};
+
 const textFromUnknown = (value: unknown): string => {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map(textFromUnknown).filter(Boolean).join("\n");
@@ -651,7 +699,7 @@ const anthropicTools = (declarations: NativeFunctionDeclaration[]) =>
   }));
 
 function googlePartText(part: Record<string, unknown>): string {
-  if (part.thought === true) return "";
+  if (part.thought === true || part.thought === "true") return "";
   if (typeof part.text === "string") return part.text;
   const functionCall = part.functionCall as { name?: string; args?: unknown } | undefined;
   if (functionCall?.name) return formatFunctionCall({ name: functionCall.name, args: functionCall.args ?? {} });
@@ -659,9 +707,9 @@ function googlePartText(part: Record<string, unknown>): string {
 }
 
 function googlePartReasoning(part: Record<string, unknown>): string {
-  const summary = textFromUnknown(part.thoughtSummary) || textFromUnknown(part.thought_summary);
+  const summary = textFromUnknown(part.thoughtSummary) || textFromUnknown(part.thought_summary) || textFromUnknown(part.reasoning) || textFromUnknown(part.reasoning_content);
   if (summary) return summary;
-  return part.thought === true ? textFromUnknown(part.text) : "";
+  return part.thought === true || part.thought === "true" ? textFromUnknown(part.text) : "";
 }
 
 export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelAdapter {
@@ -679,6 +727,8 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
       const declarations = functionDeclarations(settings);
       const budget = thinkingBudget(settings);
       const reasoningEffort = openAiReasoningEffort(settings);
+      const geminiThinking = geminiThinkingConfig(settings, budget, provider.model);
+      const anthropicThinking = anthropicThinkingConfig(settings, budget, provider.model);
       let requestEndpoint = "";
       const request = async (endpoint: string, init: RequestInit) => {
         requestEndpoint = endpoint;
@@ -713,10 +763,9 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           prompt,
           "thinking.effort": reasoningEffort ?? undefined,
           "thinking.enabled": settings.thinkingLevel === "off" ? false : true,
-          "thinking.anthropic": settings.thinkingLevel === "off" ? undefined : { type: "adaptive", display: "summarized" },
-          "thinking.gemini": settings.thinkingLevel === "off" ? undefined : (/^gemini-(?:3|4)/i.test(provider.model)
-            ? { thinkingConfig: { thinkingLevel: settings.thinkingLevel === "custom" ? "medium" : settings.thinkingLevel } }
-            : budget ? { thinkingConfig: { thinkingBudget: budget, includeThoughts: true } } : undefined),
+          "thinking.anthropic": anthropicThinking?.thinking,
+          "thinking.anthropicOutputConfig": anthropicThinking?.outputConfig,
+          "thinking.gemini": geminiThinking,
           maxTokens: budget ? Math.max(4096, budget + 1024) : 4096,
         };
         const body = renderAdapterTemplate(adapter.request?.body ?? { model: "{{model}}", stream: true, messages: "{{messages.openai}}" }, adapterContext);
@@ -769,7 +818,8 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
             ...(settings.systemPrompt.trim() ? { system: settings.systemPrompt.trim() } : {}),
             messages: anthropicMessages(messages),
             ...(declarations.length ? { tools: anthropicTools(declarations) } : {}),
-            ...(settings.thinkingLevel !== "off" ? { thinking: { type: "adaptive", display: "summarized" } } : {}),
+            ...(anthropicThinking?.thinking ? { thinking: anthropicThinking.thinking } : {}),
+            ...(anthropicThinking?.outputConfig ? { output_config: anthropicThinking.outputConfig } : {}),
           }),
         });
       } else {
@@ -782,13 +832,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           body: JSON.stringify({
             ...(settings.systemPrompt.trim() ? { system_instruction: { parts: [{ text: settings.systemPrompt.trim() }] } } : {}),
             ...(tools.length ? { tools } : {}),
-            ...(settings.thinkingLevel !== "off" ? {
-              generationConfig: {
-                thinkingConfig: /^gemini-(?:3|4)/i.test(provider.model)
-                  ? { thinkingLevel: settings.thinkingLevel === "custom" ? "medium" : settings.thinkingLevel }
-                  : { thinkingBudget: budget ?? 1024, includeThoughts: true },
-              },
-            } : {}),
+            ...(geminiThinking ? { generationConfig: geminiThinking } : {}),
             contents: googleContents(messages),
           }),
         });
@@ -937,7 +981,7 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
           const usageUpdate = updateUsage(data.usage ?? (data.response as Record<string, unknown> | undefined)?.usage);
           if (usageUpdate) { yield usageUpdate; continue; }
           const responseEvent = typeof data.type === "string" ? data.type : "";
-          if (responseEvent === "response.reasoning_text.delta" || responseEvent === "response.reasoning_summary_text.delta") {
+          if (/^response\.reasoning(?:_text|_summary_text)?\.delta$/.test(responseEvent)) {
             const delta = textFromUnknown(data.delta);
             if (delta) yield appendReasoning(delta);
             continue;
@@ -947,8 +991,8 @@ export function createBrowserAdapter(getSettings: () => AppSettings): ChatModelA
             if (delta) yield append(delta);
             continue;
           }
-          if (responseEvent === "response.reasoning_summary_text.done" || responseEvent === "response.reasoning_text.done") {
-            const text = textFromUnknown(data.text);
+          if (/^response\.reasoning(?:_text|_summary_text|_summary_part)?\.done$/.test(responseEvent)) {
+            const text = textFromUnknown(data.text) || textFromUnknown(data.part);
             if (text) yield appendReasoning(text);
             continue;
           }
