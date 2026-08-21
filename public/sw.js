@@ -1,4 +1,4 @@
-const CACHE_NAME = "mosschat-shell-v3";
+const CACHE_NAME = "mosschat-shell-v4";
 const SHELL = ["/", "/icon.svg", "/icons/mosschat-192.png", "/icons/mosschat-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -21,12 +21,12 @@ self.addEventListener("fetch", (event) => {
     return;
   }
   if (request.destination === "script" || request.destination === "style" || request.destination === "image") {
-    event.respondWith(caches.match(request).then((cached) => cached || fetch(request).then((response) => {
+    event.respondWith(fetch(request).then((response) => {
       if (response.ok) {
         const copy = response.clone();
         void caches.open(CACHE_NAME).then((cache) => cache.put(request, copy));
       }
       return response;
-    })));
+    }).catch(() => caches.match(request)));
   }
 });

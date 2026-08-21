@@ -1138,10 +1138,23 @@ export default function Home() {
       deferredInstallPrompt.current = event as InstallPromptEvent;
     };
     const onInstalled = () => { deferredInstallPrompt.current = null; setInstalled(true); };
+    let reloadedAfterServiceWorkerUpdate = false;
+    const onServiceWorkerControllerChange = () => {
+      if (reloadedAfterServiceWorkerUpdate) return;
+      reloadedAfterServiceWorkerUpdate = true;
+      window.location.reload();
+    };
     window.addEventListener("beforeinstallprompt", onBeforeInstall);
     window.addEventListener("appinstalled", onInstalled);
-    if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
-    return () => { window.removeEventListener("beforeinstallprompt", onBeforeInstall); window.removeEventListener("appinstalled", onInstalled); };
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.addEventListener("controllerchange", onServiceWorkerControllerChange);
+      void navigator.serviceWorker.register("/sw.js?v=4").then((registration) => registration.update()).catch(() => undefined);
+    }
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstall);
+      window.removeEventListener("appinstalled", onInstalled);
+      navigator.serviceWorker?.removeEventListener("controllerchange", onServiceWorkerControllerChange);
+    };
   }, []);
 
   const activeChat = data.chats.find((chat) => chat.id === activeChatId) ?? null;
