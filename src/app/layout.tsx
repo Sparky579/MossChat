@@ -3,6 +3,7 @@ import "katex/dist/katex.min.css";
 import "./globals.css";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://mosschat.xyz"),
   title: "MossChat · Local AI workspace",
   description: "MossChat is a local, browser-only multi-model chat workspace",
   icons: {

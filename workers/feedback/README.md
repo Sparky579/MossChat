@@ -1,6 +1,6 @@
 # MossChat feedback worker
 
-This Cloudflare Worker receives browser feedback and sends it to `1779894826@qq.com` through Resend. It accepts requests only from `https://chat.utilgadgets.com` by default.
+This Cloudflare Worker receives browser feedback and sends it to `1779894826@qq.com` through Resend. It accepts requests from `https://mosschat.xyz` and `https://www.mosschat.xyz`.
 
 From this directory, set the required secrets:
 
@@ -23,4 +23,4 @@ Deploy the Worker:
 npx wrangler deploy
 ```
 
-In Cloudflare, attach the Worker to the route `chat.utilgadgets.com/feedback`. The browser form uses `/feedback`, so this route keeps feedback on the same public origin. If a separate Worker domain is preferred, build MossChat with `NEXT_PUBLIC_FEEDBACK_ENDPOINT` set to its full URL.
+The Worker is attached to `/feedback` on the root domain and `www`. The browser form uses `/feedback`, so it stays on the same public origin. If a separate Worker domain is preferred, build MossChat with `NEXT_PUBLIC_FEEDBACK_ENDPOINT` set to its full URL.

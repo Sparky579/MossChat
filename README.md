@@ -7,7 +7,7 @@
 Browser based chat client for your own model API keys. Keys, chats, files, and settings stay in the browser.
 
 <p>
-  <a href="https://chat.utilgadgets.com">Try it now</a>
+  <a href="https://mosschat.xyz">Try it now</a>
   · <a href="#getting-started">Docs</a>
   · <a href="CHANGELOG.md">Changelog</a>
 </p>

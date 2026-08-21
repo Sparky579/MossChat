@@ -2,6 +2,8 @@ type Env = {
   RESEND_API_KEY: string;
   RESEND_FROM: string;
   RESEND_AUDIENCE_ID?: string;
+  ALLOWED_ORIGINS?: string;
+  /** Legacy single-origin setting kept for existing Worker deployments. */
   ALLOWED_ORIGIN?: string;
 };
 
@@ -28,6 +30,12 @@ function headers(origin: string) {
     "Access-Control-Max-Age": "86400",
     Vary: "Origin",
   };
+}
+
+function allowedOrigins(env: Env) {
+  const configured = env.ALLOWED_ORIGINS ?? env.ALLOWED_ORIGIN ?? "https://mosschat.xyz";
+  const origins = configured.split(",").map((origin) => origin.trim()).filter(Boolean);
+  return origins.length ? origins : ["https://mosschat.xyz"];
 }
 
 function json(body: Record<string, unknown>, status: number, origin: string) {
@@ -77,10 +85,10 @@ async function parseFeedbackPayload(request: Request): Promise<FeedbackPayload> 
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const allowedOrigin = env.ALLOWED_ORIGIN || "https://chat.utilgadgets.com";
+    const origins = allowedOrigins(env);
     const requestOrigin = request.headers.get("Origin");
-    if (requestOrigin && requestOrigin !== allowedOrigin) return new Response("Forbidden", { status: 403 });
-    const origin = requestOrigin || allowedOrigin;
+    if (requestOrigin && !origins.includes(requestOrigin)) return new Response("Forbidden", { status: 403 });
+    const origin = requestOrigin || origins[0];
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: headers(origin) });
     if (new URL(request.url).pathname !== "/feedback") return json({ error: "Not found" }, 404, origin);
