@@ -8,6 +8,7 @@ const SERVER_ID_PREFIX = "mosschat.webdav.sync.server-id.v1";
 const META_FILE = "meta.json";
 const ITERATIONS = 600_000;
 const MAX_SYNC_IMAGE_EDGE = 2048;
+const DAILY_AUTO_MERGE_MIN_OVERLAP = 0.85;
 
 export type SyncConfig = {
   endpoint: string;
@@ -24,13 +25,15 @@ type SyncConfigPayload = { endpoint?: unknown; url?: unknown; username?: unknown
 type SyncMeta = { serverId: string; salt: string; schema: 1; createdAt: string };
 type EncryptedEnvelope = { v: 1; iv: string; data: string };
 type SyncRecord = { type: "chat" | "message" | "notebook" | "settings" | "tomb"; id: string; updatedAt: string; payload: unknown; clock?: number; deviceId?: string; deviceName?: string };
+type ContentSyncRecord = SyncRecord & { type: "chat" | "message" | "notebook" };
 /** Only sync metadata is kept locally: no chat body, attachment bytes, or encrypted record cache. */
 type SyncIndexEntry = { hash: string; clock: number; deviceId: string };
 type SyncIndex = Record<string, SyncIndexEntry>;
 
 export type SyncResolution = "merge" | "prefer-local" | "prefer-remote";
 export type SyncSummary = { chats: number; messages: number; notebooks: number; firstUpdatedAt: string | null; lastUpdatedAt: string | null };
-export type SyncInspection = { state: "empty" | "ready" | "missing-meta"; serverId: string | null; previousServerId: string | null; createdAt: string | null; local: SyncSummary; remote: SyncSummary; common: Pick<SyncSummary, "chats" | "messages" | "notebooks">; conflicts: number; remoteLastWrite: { at: string; deviceId: string; deviceName: string } | null; remoteChats: Array<{ id: string; title: string; updatedAt: string }>; needsDecision: boolean };
+export type SyncDifference = { type: "chat" | "message" | "notebook"; id: string; local: string | null; remote: string | null };
+export type SyncInspection = { state: "empty" | "ready" | "missing-meta"; serverId: string | null; previousServerId: string | null; createdAt: string | null; local: SyncSummary; remote: SyncSummary; common: Pick<SyncSummary, "chats" | "messages" | "notebooks">; conflicts: number; remoteLastWrite: { at: string; deviceId: string; deviceName: string } | null; differences: SyncDifference[]; needsDecision: boolean };
 export type SyncVerification = { state: "empty" | "ready"; serverId: string | null; records: number };
 
 export const emptySyncConfig = (): SyncConfig => ({ endpoint: "", username: "", password: "", passphrase: "", passphraseInitialized: false, deviceId: crypto.randomUUID(), deviceName: "", includeKeys: false });
@@ -103,6 +106,15 @@ function indexKey(config: SyncConfig) { return `${INDEX_PREFIX}:${configScope(co
 function clockKey(config: SyncConfig) { return `${CLOCK_PREFIX}:${configScope(config)}`; }
 function lastSyncKey(config: SyncConfig) { return `${LAST_SYNC_PREFIX}:${configScope(config)}`; }
 function serverIdKey(config: SyncConfig) { return `${SERVER_ID_PREFIX}:${configScope(config)}`; }
+
+/** Disconnect this browser from a sync server without touching local or remote content. */
+export function clearWebDavSync(config: SyncConfig) {
+  localStorage.removeItem(CONFIG_KEY);
+  localStorage.removeItem(indexKey(config));
+  localStorage.removeItem(clockKey(config));
+  localStorage.removeItem(lastSyncKey(config));
+  localStorage.removeItem(serverIdKey(config));
+}
 
 function loadIndex(config: SyncConfig): SyncIndex {
   try {
@@ -325,7 +337,10 @@ async function indexRecords(records: SyncRecord[]): Promise<SyncIndex> {
 
 async function listEntries(config: SyncConfig) {
   const response = await request(config, "", { method: "PROPFIND", headers: { Depth: "1", "Content-Type": "text/xml" }, body: "<?xml version=\"1.0\"?><propfind xmlns=\"DAV:\"><prop><getcontentlength/></prop></propfind>" });
-  if (!response.ok && response.status !== 207) throw new Error(`Could not list remote sync records (${response.status}).`);
+  if (!response.ok && response.status !== 207) {
+    if (response.status === 401 || response.status === 403) throw new Error("WebDAV username or password is incorrect.");
+    throw new Error(`Could not list remote sync records (${response.status}).`);
+  }
   const xml = await response.text();
   const document = new DOMParser().parseFromString(xml, "application/xml");
   const root = new URL(normalizedEndpoint(config.endpoint));
@@ -388,7 +403,7 @@ function settingsForLocal(selected: SyncRecord | undefined, local: AppSettings, 
 }
 
 const emptySummary = (): SyncSummary => ({ chats: 0, messages: 0, notebooks: 0, firstUpdatedAt: null, lastUpdatedAt: null });
-const isContentRecord = (record: SyncRecord) => record.type === "chat" || record.type === "message" || record.type === "notebook";
+const isContentRecord = (record: SyncRecord): record is ContentSyncRecord => record.type === "chat" || record.type === "message" || record.type === "notebook";
 
 function summarizeRecords(records: SyncRecord[]): SyncSummary {
   const summary = emptySummary();
@@ -403,7 +418,41 @@ function summarizeRecords(records: SyncRecord[]): SyncSummary {
   return summary;
 }
 
-function hasContent(summary: SyncSummary) { return Boolean(summary.chats || summary.messages || summary.notebooks); }
+/** A remote workspace is automatically accepted only when all content matches exactly. */
+function hasExactContentMatch(local: SyncSummary, remote: SyncSummary, common: Pick<SyncSummary, "chats" | "messages" | "notebooks">) {
+  const total = (summary: Pick<SyncSummary, "chats" | "messages" | "notebooks">) => summary.chats + summary.messages + summary.notebooks;
+  return total(local) === total(remote) && total(local) === total(common);
+}
+
+/** Once a device is paired, small normal sync deltas should not require a decision. */
+function hasDailyOverlap(local: SyncSummary, remote: SyncSummary, common: Pick<SyncSummary, "chats" | "messages" | "notebooks">) {
+  const total = (summary: Pick<SyncSummary, "chats" | "messages" | "notebooks">) => summary.chats + summary.messages + summary.notebooks;
+  const localTotal = total(local);
+  const remoteTotal = total(remote);
+  const commonTotal = total(common);
+  if (!localTotal || !remoteTotal || !commonTotal) return false;
+  return commonTotal / localTotal >= DAILY_AUTO_MERGE_MIN_OVERLAP && commonTotal / remoteTotal >= DAILY_AUTO_MERGE_MIN_OVERLAP;
+}
+
+function differencePreview(record: SyncRecord) {
+  if (record.type === "message") {
+    const message = (record.payload as { message?: SavedMessage }).message;
+    if (!message) return "(message could not be read)";
+    const content = message.content.map((part) => {
+      if (part.type === "text" || part.type === "reasoning") return String(part.text ?? "");
+      if (part.type === "image") return "[image]";
+      if (part.type === "clear-boundary") return "[conversation cleared]";
+      return `[${String(part.type ?? "content")}]`;
+    }).filter(Boolean).join("\n");
+    return `${message.role}\n${content || "(no text content)"}`;
+  }
+  if (record.type === "chat") {
+    const chat = record.payload as Chat;
+    return `${chat.title || "Untitled chat"}\n${record.id}`;
+  }
+  const notebook = record.payload as Notebook;
+  return `${notebook.title || "Untitled notebook"}\n${notebook.content || "(no text content)"}`;
+}
 
 export async function inspectWebDavSync({ config, data, settings }: { config: SyncConfig; data: AppData; settings: AppSettings }): Promise<SyncInspection> {
   if (!isSyncConfigured(config)) throw new Error("Configure endpoint, WebDAV credentials, and passphrase first.");
@@ -414,38 +463,53 @@ export async function inspectWebDavSync({ config, data, settings }: { config: Sy
   const initialMeta = entries.includes(META_FILE) ? await readMeta(config) : null;
   if (!initialMeta) {
     const files = entries.filter((file) => file.endsWith(".bin"));
-    if (files.length) return { state: "missing-meta", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, remoteChats: [], needsDecision: true };
-    return { state: "empty", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, remoteChats: [], needsDecision: true };
+    if (files.length) return { state: "missing-meta", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, differences: [], needsDecision: true };
+    return { state: "empty", serverId: null, previousServerId, createdAt: null, local: localSummary, remote: emptySummary(), common: { chats: 0, messages: 0, notebooks: 0 }, conflicts: 0, remoteLastWrite: null, differences: [], needsDecision: true };
   }
   const meta = initialMeta.serverId ? initialMeta : await ensureMeta(config);
   const key = await encryptionKey(config.passphrase, base64ToBytes(meta.salt));
   const remoteRecords = await readRecords(config, key, entries.filter((file) => file.endsWith(".bin")));
   const remoteSummary = summarizeRecords(remoteRecords);
   const localByFile = new Map(local.records.map((record) => [recordFile(record), record]));
+  const remoteByFile = new Map(remoteRecords.map((record) => [recordFile(record), record]));
   const common = { chats: 0, messages: 0, notebooks: 0 };
+  const differences: SyncDifference[] = [];
   let conflicts = 0;
   for (const remote of remoteRecords) {
     if (!isContentRecord(remote)) continue;
     const localRecord = localByFile.get(recordFile(remote));
-    if (!localRecord || !isContentRecord(localRecord)) continue;
+    if (!localRecord || !isContentRecord(localRecord)) {
+      differences.push({ type: remote.type, id: remote.id, local: null, remote: differencePreview(remote) });
+      continue;
+    }
     if (remote.type === "chat") common.chats += 1;
     if (remote.type === "message") common.messages += 1;
     if (remote.type === "notebook") common.notebooks += 1;
-    if (await contentHash(localRecord.payload) !== await contentHash(remote.payload)) conflicts += 1;
+    if (await contentHash(localRecord.payload) !== await contentHash(remote.payload)) {
+      conflicts += 1;
+      differences.push({ type: remote.type, id: remote.id, local: differencePreview(localRecord), remote: differencePreview(remote) });
+    }
+  }
+  for (const localRecord of local.records) {
+    if (!isContentRecord(localRecord) || remoteByFile.has(recordFile(localRecord))) continue;
+    differences.push({ type: localRecord.type, id: localRecord.id, local: differencePreview(localRecord), remote: null });
   }
   const remoteContent = remoteRecords.filter(isContentRecord);
   const newest = remoteContent.reduce<SyncRecord | null>((current, record) => !current || recordClock(record) > recordClock(current) ? record : current, null);
-  const remoteChats = remoteRecords.filter((record) => record.type === "chat").map((record) => ({ id: record.id, title: String((record.payload as Chat).title || "Untitled chat"), updatedAt: record.updatedAt })).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 12);
-  const serverChanged = Boolean(previousServerId && previousServerId !== meta.serverId);
-  const unpairedServer = !previousServerId && hasContent(remoteSummary);
-  const unrelated = hasContent(localSummary) && hasContent(remoteSummary) && common.chats === 0 && common.messages === 0 && common.notebooks === 0;
-  return { state: "ready", serverId: meta.serverId, previousServerId, createdAt: meta.createdAt, local: localSummary, remote: remoteSummary, common, conflicts, remoteLastWrite: newest ? { at: newest.updatedAt, deviceId: String(newest.deviceId ?? "legacy"), deviceName: String(newest.deviceName ?? "Unknown device") } : null, remoteChats, needsDecision: serverChanged || unpairedServer || unrelated || conflicts > 0 };
+  const exactMatch = hasExactContentMatch(localSummary, remoteSummary, common) && conflicts === 0;
+  const needsDecision = !previousServerId ? !exactMatch : !hasDailyOverlap(localSummary, remoteSummary, common);
+  return { state: "ready", serverId: meta.serverId, previousServerId, createdAt: meta.createdAt, local: localSummary, remote: remoteSummary, common, conflicts, remoteLastWrite: newest ? { at: newest.updatedAt, deviceId: String(newest.deviceId ?? "legacy"), deviceName: String(newest.deviceName ?? "Unknown device") } : null, differences, needsDecision };
 }
 
 /** Checks the endpoint, credentials, metadata and one encrypted record without writing anything. */
 export async function verifyWebDavSync(config: SyncConfig): Promise<SyncVerification> {
-  if (!isSyncConfigured(config)) throw new Error("Save the sync setup and WebDAV credentials first.");
-  const entries = await listEntries(config);
+  if (!config.endpoint.trim() || !config.username || !config.password) throw new Error("Enter the WebDAV endpoint, username, and password first.");
+  let entries: string[];
+  try { entries = await listEntries(config); }
+  catch (error) {
+    if (error instanceof TypeError) throw new Error("Could not reach the WebDAV server. Check its URL, HTTPS, and CORS settings.");
+    throw error;
+  }
   if (!entries.includes(META_FILE)) return { state: "empty", serverId: null, records: 0 };
   const meta = await readMeta(config);
   if (!meta) return { state: "empty", serverId: null, records: 0 };
@@ -472,10 +536,14 @@ export async function synchronizeWebDav({ config, data, settings, resolution = "
   const stamped = await stampLocalRecords([...local.records, ...tombs], previousIndex, config, maximumRemoteClock);
   const resolved = resolveRecords(stamped.records, remoteRecords, resolution);
   const remoteByFile = new Map(remoteRecords.map((record) => [recordFile(record), record]));
-  const uploads = resolved.filter((record) => {
+  // The selected record must win on the server even if its logical clock is older.
+  // Without this payload comparison, an explicit choice could look successful
+  // locally yet return as the same conflict after a reload.
+  const uploads = (await Promise.all(resolved.map(async (record) => {
     const remote = remoteByFile.get(recordFile(record));
-    return !remote || compareRecords(record, remote) > 0;
-  });
+    if (!remote || compareRecords(record, remote) > 0) return record;
+    return await contentHash(record.payload) === await contentHash(remote.payload) ? null : record;
+  }))).filter((record): record is SyncRecord => record !== null);
   await Promise.all(uploads.map(async (record) => {
     const response = await request(config, recordFile(record), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await encrypt(key, record)) });
     if (!response.ok) throw new Error(`Could not upload ${record.type} record (${response.status}).`);

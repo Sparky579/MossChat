@@ -15,7 +15,7 @@ type FeedbackPayload = {
   response?: unknown;
 };
 
-const feedbackMailbox = "1779894826@qq.com";
+const feedbackMailbox = "shantayreynar@gmail.com";
 const maxRequestBytes = 32 * 1024;
 
 function headers(origin: string) {

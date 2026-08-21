@@ -8,6 +8,10 @@ out/
 .env
 .env.*
 !.env.example
+.wrangler/
+workers/**/.dev.vars
+workers/**/.dev.vars.*
+!workers/**/.dev.vars.example
 
 # local data and backups
 *.zip
