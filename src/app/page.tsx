@@ -1297,6 +1297,7 @@ export default function Home() {
     setData((current) => ({ ...current, chats: [chat, ...current.chats] }));
     setActiveChatId(chat.id);
     setNotebookViewOpen(false);
+    if (window.matchMedia("(max-width: 760px)").matches) setSidebarOpen(false);
     void saveChatDelta(chat, []);
   }, []);
 

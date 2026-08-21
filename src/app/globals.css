@@ -361,9 +361,11 @@ button:not(:disabled):active { transform: scale(.97); }
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+  .composer-model-wrap { position: static; }
   .composer-model-menu, .composer-command-menu {
     max-height: calc(100dvh - 156px);
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+  .composer-model-menu { left: 0; right: 0; width: auto; bottom: calc(100% + 8px); }
 }
