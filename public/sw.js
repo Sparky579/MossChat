@@ -1,4 +1,7 @@
-const CACHE_NAME = "mosschat-shell-v4";
+// Bump this whenever a deployment changes the client state lifecycle. It
+// forces old application shells to retire instead of hydrating alongside the
+// current Vercel build after an origin migration.
+const CACHE_NAME = "mosschat-shell-v5";
 const SHELL = ["/", "/icon.svg", "/icons/mosschat-192.png", "/icons/mosschat-512.png"];
 
 self.addEventListener("install", (event) => {

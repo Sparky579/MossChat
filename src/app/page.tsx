@@ -1442,7 +1442,7 @@ export default function Home() {
     window.addEventListener("appinstalled", onInstalled);
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.addEventListener("controllerchange", onServiceWorkerControllerChange);
-      void navigator.serviceWorker.register("/sw.js?v=4").then((registration) => registration.update()).catch(() => undefined);
+      void navigator.serviceWorker.register("/sw.js?v=5").then((registration) => registration.update()).catch(() => undefined);
     }
     return () => {
       window.removeEventListener("beforeinstallprompt", onBeforeInstall);
