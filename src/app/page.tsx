@@ -53,6 +53,7 @@ import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, PROVIDER_CAPABI
 import { useDismissOnOutside } from "@/use-dismiss-on-outside";
 
 type Locale = "en" | "zh";
+const FIRST_RUN_GUIDE_PENDING_KEY = "mosschat.first-run-guide.pending.v1";
 
 function firstRunGuideLocale(country?: string | null): Locale {
   if (country?.trim().toUpperCase() === "CN") return "zh";
@@ -1451,6 +1452,8 @@ export default function Home() {
       // especially in private windows. Conversations and notebooks are the
       // durable workspace data that determine whether this is a first run.
       const isFirstRun = !stored.chats.length && !stored.notebooks.length;
+      const guidePending = sessionStorage.getItem(FIRST_RUN_GUIDE_PENDING_KEY) === "1";
+      if (isFirstRun) sessionStorage.setItem(FIRST_RUN_GUIDE_PENDING_KEY, "1");
       const initialData = stored.chats.length
         ? stored
         : (() => {
@@ -1462,7 +1465,7 @@ export default function Home() {
       setActiveChatId(initialData.chats[0]?.id ?? null);
       setActiveNotebookId(initialData.notebooks[0]?.id ?? null);
       if (!stored.chats.length) void saveChatDelta(initialData.chats[0], []);
-      if (isFirstRun) {
+      if (isFirstRun || guidePending) {
         void fetch("/api/locale", { cache: "no-store" })
           .then(async (response) => response.ok ? await response.json() as { country?: unknown } : {})
           .then((result) => setFirstRunGuideLanguage(firstRunGuideLocale(typeof result.country === "string" ? result.country : null)))
@@ -1514,6 +1517,10 @@ export default function Home() {
   const activeNotebook = data.notebooks.find((notebook) => notebook.id === activeNotebookId) ?? null;
   const promptNotebook = activeChat?.notebookId ? data.notebooks.find((notebook) => notebook.id === activeChat.notebookId) ?? null : notebookViewOpen ? activeNotebook : null;
   const openPromptSettings = (scope: PromptScope) => { setPromptDialogScope(scope); setPromptDialogOpen(true); };
+  const dismissFirstRunGuide = () => {
+    sessionStorage.removeItem(FIRST_RUN_GUIDE_PENDING_KEY);
+    setFirstRunGuideLanguage(null);
+  };
   const runningChats = data.chats.filter(chatIsRunning);
   // Keep the active thread and every in-flight thread mounted in one keyed list.
   // Switching views can then only hide a thread, never trigger its abort cleanup.
@@ -1976,7 +1983,7 @@ export default function Home() {
         const threadNotebook = chat.notebookId ? data.notebooks.find((notebook) => notebook.id === chat.notebookId) : undefined;
         const visible = !notebookViewOpen && chat.id === activeChat?.id;
         return <div className={`thread-host ${visible ? "is-active" : "is-background"}`} aria-hidden={!visible} key={chat.id}>
-          <GeminiThread chat={chat} settings={settings} systemPrompt={combinedNotebookPrompt(chat, threadNotebook, settings.systemPrompt)} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} firstRunGuideLanguage={visible ? firstRunGuideLanguage : null} onDismissFirstRunGuide={() => setFirstRunGuideLanguage(null)} />
+          <GeminiThread chat={chat} settings={settings} systemPrompt={combinedNotebookPrompt(chat, threadNotebook, settings.systemPrompt)} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} firstRunGuideLanguage={visible ? firstRunGuideLanguage : null} onDismissFirstRunGuide={dismissFirstRunGuide} />
         </div>;
       })}</div>
     </section>
