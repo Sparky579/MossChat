@@ -4,6 +4,10 @@
 
 Refactored shared page utilities into focused content, provider JSON, and dismiss-on-outside modules. Plain text and DOCX attachments are now extracted locally before requests while retaining the original file. Provider JSON import/export, key-free backup imports, and message persistence have safer shared paths. The feedback Worker now enforces its payload limit while streaming. Updated the production stack to Next.js 16 and removed unused browser-test dependencies.
 
+## 0.2.9
+
+The Model menu settings use a compact pin icon to show whether each model is in the main list. Toggling a model on when the list is full automatically removes its oldest entry.
+
 ## 0.2.8
 
 New installations now open on OpenAI with `gpt-5.6-sol` as the only main model-menu entry. `gpt-5.6-terra`, `gpt-5.3-codex-spark`, `gemini-3.7-flash`, and the remaining built-in models begin under Others. Provider JSON samples and the built-in Gemini default now use the updated model IDs. Existing saved provider and model-menu settings remain unchanged. Production builds explicitly use Webpack to avoid an incomplete Turbopack artifact on this host.

@@ -845,8 +845,9 @@ function ModelMenuSettings({ settings, onChange }: { settings: AppSettings; onCh
     const key = modelSettingsKey(entry.providerId, entry.model);
     const currentOrder = featured.map(({ providerId, model }) => ({ providerId, model }));
     if (visible) {
-      if (featuredKeys.has(key) || featured.length >= 10) return;
-      onChange({ ...settings, modelDisplayOrder: [...currentOrder, { providerId: entry.providerId, model: entry.model }] });
+      if (featuredKeys.has(key)) return;
+      // New additions are the newest entry. When full, remove the oldest one.
+      onChange({ ...settings, modelDisplayOrder: [...currentOrder, { providerId: entry.providerId, model: entry.model }].slice(-10) });
       return;
     }
     onChange({ ...settings, modelDisplayOrder: currentOrder.filter((item) => modelSettingsKey(item.providerId, item.model) !== key) });
@@ -860,11 +861,14 @@ function ModelMenuSettings({ settings, onChange }: { settings: AppSettings; onCh
   };
   const renderEntry = (entry: ModelEntry, index: number | null) => {
     const featuredEntry = index !== null;
+    const mainListLabel = featuredEntry
+      ? (locale === "zh" ? "从主列表移除" : "Remove from main list")
+      : (locale === "zh" ? "加入主列表" : "Add to main list");
     return <article className="model-preference-card" key={`${entry.providerId}:${entry.model}`}>
-      <header><span className="model-emoji" aria-hidden="true">{providerEmoji(entry.provider)}</span><div><strong>{entry.provider.name}</strong><small>{entry.model}</small></div><div className="model-display-actions"><label className="model-display-toggle" title={!featuredEntry && featured.length >= 10 ? (locale === "zh" ? "主列表最多展示 10 个模型" : "The main list can show at most 10 models") : undefined}><input type="checkbox" checked={featuredEntry} disabled={!featuredEntry && featured.length >= 10} onChange={(event) => toggleFeatured(entry, event.target.checked)} />{locale === "zh" ? "主列表" : "Main list"}</label>{featuredEntry && <><button type="button" disabled={index === 0} onClick={() => moveFeatured(index!, -1)} aria-label={locale === "zh" ? "模型上移" : "Move model up"}><ArrowUp size={15} /></button><button type="button" disabled={index === featured.length - 1} onClick={() => moveFeatured(index!, 1)} aria-label={locale === "zh" ? "模型下移" : "Move model down"}><ArrowDown size={15} /></button></>}</div></header>
+      <header><span className="model-emoji" aria-hidden="true">{providerEmoji(entry.provider)}</span><div><strong>{entry.provider.name}</strong><small>{entry.model}</small></div><div className="model-display-actions"><button type="button" className={`model-main-list-toggle ${featuredEntry ? "active" : ""}`} title={mainListLabel} aria-label={mainListLabel} aria-pressed={featuredEntry} onClick={() => toggleFeatured(entry, !featuredEntry)}><Pin size={15} fill={featuredEntry ? "currentColor" : "none"} /></button>{featuredEntry && <><button type="button" disabled={index === 0} onClick={() => moveFeatured(index!, -1)} aria-label={locale === "zh" ? "模型上移" : "Move model up"}><ArrowUp size={15} /></button><button type="button" disabled={index === featured.length - 1} onClick={() => moveFeatured(index!, 1)} aria-label={locale === "zh" ? "模型下移" : "Move model down"}><ArrowDown size={15} /></button></>}</div></header>
     </article>;
   };
-  return <><h3>{locale === "zh" ? "模型菜单" : "Model menu"}</h3><p className="muted">{locale === "zh" ? `选择最多 10 个模型显示在主列表并调整顺序；其他模型默认收起在“其他模型”中。已选 ${featured.length}/10。思考与能力设置在 API 与模型。` : `Choose and order up to 10 models for the main list. Others stay collapsed by default. ${featured.length}/10 selected. Configure thinking and capabilities in API & models.`}</p><section className="model-preference-list"><div className="model-preference-group"><h4>{locale === "zh" ? "主列表" : "Main list"}</h4>{featured.map((entry, index) => renderEntry(entry, index))}{!featured.length && <p className="model-preference-empty">{locale === "zh" ? "尚未选择模型；所有模型会收起在“其他模型”。" : "No models selected. Every model is collapsed in Others."}</p>}</div>{others.length > 0 && <div className="model-preference-group model-preference-others"><h4>{locale === "zh" ? "其他模型（默认收起）" : "Others (collapsed by default)"}</h4>{others.map((entry) => renderEntry(entry, null))}</div>}</section></>;
+  return <><h3>{locale === "zh" ? "模型菜单" : "Model menu"}</h3><p className="muted">{locale === "zh" ? `点击图钉加入或移出主列表；主列表最多显示 10 个模型，加入第 11 个时会移除最早加入的模型。其他模型默认收起。已选 ${featured.length}/10。思考与能力设置在 API 与模型。` : `Use the pin to add or remove a model from the main list. It holds up to 10 models; adding an eleventh removes the oldest. Others stay collapsed by default. ${featured.length}/10 selected. Configure thinking and capabilities in API & models.`}</p><section className="model-preference-list"><div className="model-preference-group"><h4>{locale === "zh" ? "主列表" : "Main list"}</h4>{featured.map((entry, index) => renderEntry(entry, index))}{!featured.length && <p className="model-preference-empty">{locale === "zh" ? "尚未选择模型；所有模型会收起在“其他模型”。" : "No models selected. Every model is collapsed in Others."}</p>}</div>{others.length > 0 && <div className="model-preference-group model-preference-others"><h4>{locale === "zh" ? "其他模型（默认收起）" : "Others (collapsed by default)"}</h4>{others.map((entry) => renderEntry(entry, null))}</div>}</section></>;
 }
 
 function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersistent, onChooseAutoBackup }: { settings: AppSettings; safety: StorageSafetyStatus | null; onChange: (settings: AppSettings) => void; onClose: () => void; onRequestPersistent: () => void; onChooseAutoBackup: () => void }) {

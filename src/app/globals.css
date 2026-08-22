@@ -415,9 +415,9 @@ button:not(:disabled):active { transform: scale(.97); }
 .model-preference-card small { color: var(--muted); font-size: 12px; }
 .model-display-actions { display: flex; align-items: center; gap: 5px; }
 .model-display-actions > button { display: grid; width: 29px; height: 29px; place-items: center; padding: 0; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: var(--bg); cursor: pointer; }
+.model-display-actions > button:hover:not(:disabled) { border-color: color-mix(in srgb, #198754 46%, var(--line)); color: #198754; background: #edf8f1; }
+.model-display-actions > .model-main-list-toggle.active { border-color: #198754; color: #198754; background: #e7f5ec; }
 .model-display-actions > button:disabled { cursor: default; opacity: .35; }
-.model-display-toggle { display: inline-flex !important; width: auto !important; align-items: center; gap: 5px !important; color: var(--muted) !important; font-size: 12px !important; font-weight: 500 !important; white-space: nowrap; }
-.model-display-toggle input { width: 15px !important; height: 15px !important; margin: 0 !important; accent-color: #198754; }
 .model-reasoning-controls { display: grid; grid-template-columns: minmax(130px, .7fr) minmax(0, 1.3fr); gap: 10px; }
 .model-reasoning-controls > label, .model-reasoning-controls > div { display: grid; min-width: 0; gap: 6px; color: var(--text); font-size: 12px; font-weight: 600; }
 .model-reasoning-controls select, .model-custom-levels input { width: 100%; min-height: 33px; border: 1px solid var(--line); border-radius: 8px; outline-color: #198754; color: var(--text); background: var(--bg); font: inherit; font-size: 13px; }
