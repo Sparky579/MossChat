@@ -300,7 +300,10 @@ export async function loadData(): Promise<AppData> {
     }
     const chats = metas.map((meta) => ({
       ...meta,
-      messages: (messagesByChat.get(meta.id) ?? []).sort((a, b) => a.seq - b.seq).map((message) => fromStoredMessage(message, attachmentsByMessage.get(`${meta.id}:${message.id}`) ?? [])),
+      // Older sync clients could leave two rows at the same sequence number.
+      // IndexedDB has no guaranteed order for that tie, so make every load
+      // deterministic and recover gracefully before the next write repairs it.
+      messages: (messagesByChat.get(meta.id) ?? []).sort((a, b) => a.seq - b.seq || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)).map((message) => fromStoredMessage(message, attachmentsByMessage.get(`${meta.id}:${message.id}`) ?? [])),
     }));
     if (!chats.length) {
       const legacy = safeParse<AppData>(localStorage.getItem(DATA_KEY), emptyData());
@@ -331,7 +334,9 @@ export async function saveChatDelta(chat: Chat, dirtyMessageIds: readonly string
     }
     for (const [seq, message] of messages.entries()) {
       const existingMessage = existingById.get(message.id);
-      if (!existingMessage || dirty.has(message.id)) {
+      // A reordered message must update its sequence even when its body did
+      // not change. Otherwise legacy equal sequence slots survive indefinitely.
+      if (!existingMessage || dirty.has(message.id) || existingMessage.seq !== seq) {
         await db.messages.put(toStoredMessage(chat.id, message, seq));
         await db.attachments.where("[chatId+messageId]").equals([chat.id, message.id]).delete();
         const rows = (message.attachments ?? []).map((attachment) => toStoredAttachment(chat.id, message.id, attachment));

@@ -89,7 +89,7 @@ export const ADAPTER_PRESETS: Record<AdapterBase, AdapterConfig> = {
   "gemini-generate-content": {
     schema: 1,
     id: "gemini-generate-content",
-    endpoint: { chat: "/v1/models/{model}:streamGenerateContent", method: "POST", query: { alt: "sse" } },
+    endpoint: { chat: "/v1beta/models/{model}:streamGenerateContent", method: "POST", query: { alt: "sse" } },
     auth: { type: "query", name: "key" },
     request: {
       messageFormat: "gemini",

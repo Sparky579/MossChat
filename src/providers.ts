@@ -96,9 +96,21 @@ const httpFailureSummary = (response: Response, details: string, language: AppSe
   ].join("\n");
 };
 
-/** The stable Gemini REST path is v1. Respect an explicitly configured v1beta base for compatible gateways. */
+/**
+ * Google keeps the GenerateContent REST surface (including preview models and
+ * SSE streaming) on v1beta. A user may paste either the origin or an old /v1
+ * URL, so normalise only Google's own host. Custom Gemini-shaped gateways
+ * retain the version path the user selected.
+ */
 const googleApiBase = (baseUrl: string) => {
   const base = trimSlash(baseUrl);
+  try {
+    if (new URL(base).hostname.toLowerCase() === "generativelanguage.googleapis.com") {
+      return `${base.replace(/\/v1(?:beta)?$/i, "")}/v1beta`;
+    }
+  } catch {
+    // Let the request layer show the normal endpoint diagnostic for an invalid URL.
+  }
   return /\/v1(?:beta)?$/i.test(base) ? base : `${base}/v1`;
 };
 

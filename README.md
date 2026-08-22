@@ -91,7 +91,7 @@ In **Settings → API & models → Add by JSON**, use the OpenAI, Anthropic, or 
 ]
 ```
 
-For a native Gemini provider, the Base URL is the API origin only: do not append `/models`, a model name, or a MossChat page URL. MossChat adds the required `/v1/models/{model}:generateContent` route itself.
+For a native Gemini provider, the Base URL is the API origin only: do not append `/models`, a model name, or a MossChat page URL. MossChat adds the required `/v1beta/models/{model}:generateContent` route itself. This is required for Gemini preview models and streamed GenerateContent requests.
 
 ## Data and privacy
 
