@@ -47,12 +47,13 @@ import { adapterBaseForProviderKind, adapterGenerationPrompt, adapterPreset, con
 import { createBrowserAdapter, generateBrowserImages, generateChatTitle, supportsNativeImageGeneration } from "@/providers";
 import { chatSearchText, chatToMarkdown, compactContext, estimatedTokens, fallbackTitle, firstText, functionCallFromText, inflateMessages, messageParts, messageText, messageUsage, savedAttachmentFromDraft, searchExcerpt, visibleMessagesAfterClear, type ContentPart, type FileAttachmentDraft, type FunctionCallRequest } from "@/chat-content";
 import { parseProviderJson, serializeProviderJson } from "@/provider-json";
-import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, settingsWithoutImportedKeys, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
+import { chooseAutomaticBackupFolder, createBackupZip, defaultSettings, deleteChat, deleteNotebook, download, escapeHtml, getStorageSafetyStatus, loadData, loadSettings, markManualBackup, newId, normalizeSettings, readBackupZip, replaceData, requestPersistentStorage, saveChatDelta, saveChatMetadata, saveNotebook, saveSettings, settingsWithoutImportedKeys, type StorageSafetyStatus, writeAutomaticBackup } from "@/storage";
 import { clearWebDavSync, emptySyncConfig, inspectWebDavSync, inspectWebDavTarget, isSyncConfigured, loadLastSyncAt, loadSyncConfig, parseSyncConfig, replaceWebDavSync, saveSyncConfig, SYNC_CONFIGURATION_CHANGED_ERROR, syncConfigJson, synchronizeWebDav, verifyWebDavSync, type SyncConfig, type SyncInspection, type SyncResolution } from "@/sync";
 import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, PROVIDER_CAPABILITIES, modelSettingsKey, type AdapterBase, type AdapterConfig, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type NotebookPromptMode, type PromptPreset, type ProviderCapability, type ProviderId, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "@/types";
 import { useDismissOnOutside } from "@/use-dismiss-on-outside";
 
 type Locale = "en" | "zh";
+type SyncReviewChoice = SyncResolution | "disconnect-local";
 const FIRST_RUN_GUIDE_PENDING_KEY = "mosschat.first-run-guide.pending.v1";
 
 function firstRunGuideLocale(country?: string | null): Locale {
@@ -1347,7 +1348,7 @@ If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix
   </div>;
 }
 
-function SyncReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncResolution) => void }) {
+function SyncReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncReviewChoice) => void }) {
   const locale = useContext(LocaleContext);
   const isChinese = locale === "zh";
   const [preview, setPreview] = useState(false);
@@ -1619,6 +1620,50 @@ export default function Home() {
       syncRunning.current = false;
     }
   }, [settings.language, syncConfig]);
+  const importSyncZip = async (file: File) => {
+    try {
+      const imported = await readBackupZip(file);
+      const message = settings.language === "zh" ? "导入会替换此浏览器当前的本地会话和 Notebook。确定继续吗？" : "Importing replaces this browser's local chats and Notebooks. Continue?";
+      if (!window.confirm(message)) return;
+      dataRef.current = imported;
+      setData(imported);
+      setActiveChatId(imported.chats[0]?.id ?? null);
+      setActiveNotebookId(imported.notebooks[0]?.id ?? null);
+      await replaceData(imported);
+      autoSyncSignature.current = "";
+      if (!syncReady) {
+        setSyncStatus("idle");
+        setSyncMessage(settings.language === "zh" ? "ZIP 已导入。本地数据尚未连接同步服务器。" : "ZIP imported. Local data is not connected to a sync server.");
+        return;
+      }
+      setSyncStatus("syncing");
+      setSyncMessage("");
+      const inspection = await inspectWebDavSync({ config: syncConfig, data: imported, settings: settingsRef.current });
+      if (inspection.state !== "ready" || inspection.differences.length || inspection.conflicts) {
+        setSyncReview(inspection);
+        setSyncStatus("idle");
+        setSyncMessage(settings.language === "zh" ? "ZIP 已导入。请选择如何处理本地与服务器差异。" : "ZIP imported. Choose how to handle local and server differences.");
+        return;
+      }
+      setSyncStatus("idle");
+      void runSync();
+    } catch (error) {
+      if (syncConnectionChanged(error)) {
+        disconnectChangedSync();
+        return;
+      }
+      setSyncStatus("error");
+      setSyncMessage(error instanceof Error ? error.message : (settings.language === "zh" ? "无法导入此 ZIP。" : "Could not import this ZIP."));
+    }
+  };
+  const resolveSyncReview = (resolution: SyncReviewChoice) => {
+    setSyncReview(null);
+    if (resolution === "disconnect-local") {
+      clearSyncConfig();
+      return;
+    }
+    void runSync(resolution);
+  };
   const installApp = async () => {
     const prompt = deferredInstallPrompt.current;
     if (!prompt) { setInstallGuideOpen(true); return; }
@@ -1627,19 +1672,19 @@ export default function Home() {
     if (choice.outcome === "accepted") { deferredInstallPrompt.current = null; setInstalled(true); }
   };
   useEffect(() => {
-    if (!hydrated || !syncReady || hasStreamingMessage || autoSyncSignature.current === syncSignature) return;
+    if (!hydrated || !syncReady || syncReview || hasStreamingMessage || autoSyncSignature.current === syncSignature) return;
     const timer = window.setTimeout(() => {
       void runSync().then((completed) => { if (completed) autoSyncSignature.current = syncSignature; });
     }, lastSyncAt ? 3_000 : 250);
     return () => window.clearTimeout(timer);
-  }, [hasStreamingMessage, hydrated, lastSyncAt, runSync, syncReady, syncSignature]);
+  }, [hasStreamingMessage, hydrated, lastSyncAt, runSync, syncReady, syncReview, syncSignature]);
   useEffect(() => {
-    if (!hydrated || !syncReady) return;
+    if (!hydrated || !syncReady || syncReview) return;
     const timer = window.setInterval(() => { if (!hasStreamingMessage) void runSync(); }, 600_000);
     const online = () => { if (!hasStreamingMessage) void runSync(); };
     window.addEventListener("online", online);
     return () => { window.clearInterval(timer); window.removeEventListener("online", online); };
-  }, [hasStreamingMessage, hydrated, runSync, syncReady]);
+  }, [hasStreamingMessage, hydrated, runSync, syncReady, syncReview]);
   useEffect(() => {
     if (!syncReady) return;
     const timer = window.setInterval(() => setSyncNow(Date.now()), 30_000);
@@ -1950,7 +1995,7 @@ export default function Home() {
         <div className="top-actions">
           <button className="top-icon" type="button" aria-label={settings.language === "zh" ? "新建对话" : "New chat"} title={settings.language === "zh" ? "新建对话" : "New chat"} onClick={() => createChat()}><MessageSquarePlus size={17} /></button>
           {activeChat && <button className="top-icon desktop-top-utility" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
-          <div className="sync-wrap" ref={syncMenuRef}><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncReady && <span className="sync-age" aria-live="polite">{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncStatusText}</span>}{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncReady ? "is-ready" : "is-inactive"} ${syncStatus === "error" ? "error" : ""} ${syncStatus === "syncing" ? "is-syncing" : ""}`}><i />{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
+          <div className="sync-wrap" ref={syncMenuRef}><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncReady && <span className="sync-age" aria-live="polite">{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncStatusText}</span>}{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncReady ? "is-ready" : "is-inactive"} ${syncStatus === "error" ? "error" : ""} ${syncStatus === "syncing" ? "is-syncing" : ""}`}><i />{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><label className="sync-import-backup"><input type="file" accept="application/zip,.zip" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importSyncZip(file); event.currentTarget.value = ""; setSyncMenuOpen(false); }} /><Archive size={15} />{settings.language === "zh" ? "从 ZIP 导入" : "Import ZIP"}</label><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
           <div className="export-wrap desktop-top-utility"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div>
           <button className="top-icon desktop-top-utility" type="button" title={settings.language === "zh" ? "反馈" : "Feedback"} onClick={() => setFeedbackTarget(null)}><MessageSquareText size={17} />{settings.language === "zh" ? "反馈" : "Feedback"}</button>
           <div className="mobile-top-more" ref={mobileTopActionsRef}>
@@ -1985,7 +2030,7 @@ export default function Home() {
     {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
     {installGuideOpen && <InstallDialog onClose={() => setInstallGuideOpen(false)} />}
     {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onOverwrite={overwriteRemoteSync} onClear={clearSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
-    {syncReview && <SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={(resolution) => { setSyncReview(null); void runSync(resolution); }} />}
+    {syncReview && <><SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={resolveSyncReview} />{syncReview.state === "ready" && <button type="button" className="sync-review-disconnect-action" onClick={() => resolveSyncReview("disconnect-local")}>{settings.language === "zh" ? "保留本地并断开" : "Keep local & disconnect"}</button>}</>}
     {syncReconfigureNotice && <div className="modal-backdrop" onMouseDown={() => setSyncReconfigureNotice(false)}><section className="sync-review-dialog" role="alertdialog" aria-modal="true" aria-label={settings.language === "zh" ? "同步服务器已更改" : "Sync server changed"} onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{settings.language === "zh" ? "同步需要重新配置" : "Sync needs to be reconfigured"}</h2></div><button className="icon-button" type="button" onClick={() => setSyncReconfigureNotice(false)}><X /></button></header><div className="sync-review-body"><p className="sync-review-warning">{settings.language === "zh" ? "当前服务器配置已更改，请重新配置。" : "The current server configuration has changed. Please configure sync again."}</p><p>{settings.language === "zh" ? "本机数据没有被删除；重新配置后可选择加入已有同步，或新建同步并确认是否覆盖远程数据。" : "Local data was not deleted. Reconfigure to join an existing sync or create a new sync and confirm any remote overwrite."}</p></div><footer><button type="button" className="sync-review-cancel" onClick={() => setSyncReconfigureNotice(false)}>{settings.language === "zh" ? "稍后" : "Later"}</button><button type="button" className="text-button" onClick={() => { setSyncReconfigureNotice(false); setSyncConfigOpen(true); }}>{settings.language === "zh" ? "重新配置" : "Reconfigure"}</button></footer></section></div>}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;

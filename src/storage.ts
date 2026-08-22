@@ -1,5 +1,5 @@
 import Dexie, { type EntityTable } from "dexie";
-import { strToU8, zipSync } from "fflate";
+import { strToU8, unzipSync, zipSync } from "fflate";
 import { normalizeAdapterConfig } from "./adapter-config";
 import { randomUuid } from "./id";
 import { DEFAULT_PROVIDER_CAPABILITIES, DEFAULT_THINKING_LEVELS, PROVIDER_CAPABILITIES, modelSettingsKey, type AppData, type AppSettings, type Chat, type ModelDisplayItem, type ModelThinkingSettings, type Notebook, type PromptPreset, type ProviderCapability, type ProviderKind, type ProviderSettings, type SavedAttachment, type SavedMessage, type ThinkingLevel } from "./types";
@@ -21,6 +21,23 @@ export type BackupSelection = {
   settings: boolean;
   attachments: boolean;
 };
+
+/** Reads the conversation payload from a MossChat ZIP without expanding its separate attachment files. */
+export async function readBackupZip(file: File): Promise<AppData> {
+  let files: Record<string, Uint8Array>;
+  try {
+    files = unzipSync(new Uint8Array(await file.arrayBuffer()), { filter: (entry) => entry.name === "chats.json" });
+  } catch {
+    throw new Error("This ZIP could not be read.");
+  }
+  const payload = files["chats.json"];
+  if (!payload) throw new Error("This ZIP does not contain chat data.");
+  let parsed: { chats?: unknown; notebooks?: unknown };
+  try { parsed = JSON.parse(new TextDecoder().decode(payload)) as { chats?: unknown; notebooks?: unknown }; }
+  catch { throw new Error("The chat data in this ZIP is invalid."); }
+  if (!Array.isArray(parsed.chats) || !Array.isArray(parsed.notebooks)) throw new Error("The chat data in this ZIP is invalid.");
+  return { chats: parsed.chats as Chat[], notebooks: parsed.notebooks as Notebook[] };
+}
 
 export type StorageSafetyStatus = {
   supported: boolean;

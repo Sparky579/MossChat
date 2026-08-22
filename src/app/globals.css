@@ -503,6 +503,11 @@ button:not(:disabled):active { transform: scale(.97); }
 .adapter-dialog footer .adapter-clear { color: #a13d33; }
 .adapter-dialog footer .text-button { color: #fff; background: var(--deep-blue); }
 
+.sync-menu .sync-import-backup { display: flex; width: 100%; min-height: 36px; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px; color: var(--text); cursor: pointer; font-size: 13px; }
+.sync-menu .sync-import-backup:hover { background: var(--surface-2); }
+.sync-menu .sync-import-backup input { display: none; }
+.sync-review-disconnect-action { position: fixed; z-index: 61; left: 50%; bottom: max(12px, calc(50dvh - 340px)); min-height: 34px; padding: 0 13px; border: 1px solid #e9cf9a; border-radius: 17px; color: #86520d; background: #fff8eb; box-shadow: 0 1px 2px rgba(0,0,0,.05); cursor: pointer; transform: translateX(-50%); }
+
 @media (max-width: 760px) {
   .adapter-dialog { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); }
   .adapter-dialog > header, .adapter-dialog-body { padding-right: 15px; padding-left: 15px; }

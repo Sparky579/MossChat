@@ -4,6 +4,10 @@
 
 Refactored shared page utilities into focused content, provider JSON, and dismiss-on-outside modules. Plain text and DOCX attachments are now extracted locally before requests while retaining the original file. Provider JSON import/export, key-free backup imports, and message persistence have safer shared paths. The feedback Worker now enforces its payload limit while streaming. Updated the production stack to Next.js 16 and removed unused browser-test dependencies.
 
+## 0.2.16
+
+The Sync menu can now import a MossChat ZIP backup without expanding separate attachment files unnecessarily. If its imported chats differ from a configured server, the existing review dialog decides whether to keep local, keep the server, or merge. It now also offers Keep local & disconnect, which preserves local records while clearing the complete sync connection and its local sync state.
+
 ## 0.2.15
 
 Removed the forced page refresh when the PWA service worker takes control. First-run guidance and the current page now stay in place during service worker setup.
