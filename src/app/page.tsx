@@ -1373,6 +1373,7 @@ function SyncReadyReviewDialog({ inspection, onClose, onResolve }: { inspection:
   const locale = useContext(LocaleContext);
   const isChinese = locale === "zh";
   const [preview, setPreview] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const formatRange = (first: string | null, last: string | null) => !first || !last ? "—" : `${new Intl.DateTimeFormat(isChinese ? "zh-CN" : "en-US", { year: "numeric", month: "short" }).format(new Date(first))} ${isChinese ? "至" : "to"} ${new Intl.DateTimeFormat(isChinese ? "zh-CN" : "en-US", { year: "numeric", month: "short" }).format(new Date(last))}`;
   const summary = (value: SyncInspection["local"]) => ({ chats: value.chats.toLocaleString(), messages: value.messages.toLocaleString(), range: formatRange(value.firstUpdatedAt, value.lastUpdatedAt) });
   const local = summary(inspection.local);
@@ -1389,13 +1390,13 @@ function SyncReadyReviewDialog({ inspection, onClose, onResolve }: { inspection:
         <table className="sync-review-table"><thead><tr><th></th><th>{isChinese ? "本地" : "Local"}</th><th>{isChinese ? "服务器" : "Server"}</th><th>{isChinese ? "共有" : "Shared"}</th></tr></thead><tbody><tr><th>{isChinese ? "会话" : "Chats"}</th><td>{local.chats}</td><td>{remote.chats}</td><td>{inspection.common.chats.toLocaleString()}</td></tr><tr><th>{isChinese ? "消息" : "Messages"}</th><td>{local.messages}</td><td>{remote.messages}</td><td>{inspection.common.messages.toLocaleString()}</td></tr><tr><th>{isChinese ? "时间范围" : "Time range"}</th><td>{local.range}</td><td>{remote.range}</td><td>—</td></tr></tbody></table>
         {inspection.differences.length > 0 && <p className="sync-review-warning">{isChinese ? `发现 ${inspection.differences.length} 条不同项。请选择处理方式，或先查看差异。` : `${inspection.differences.length} items differ. Choose how to handle them, or view the differences first.`}</p>}
         {preview && <section className="sync-difference-list"><strong>{isChinese ? `差异详情（${inspection.differences.length} 条）` : `Differences (${inspection.differences.length})`}</strong>{inspection.differences.map((difference) => <article key={`${difference.type}:${difference.id}`}><header><strong>{differenceLabel(difference.type)}</strong><small>{difference.id}</small></header><div><section><span>{isChinese ? "本地" : "Local"}</span><pre>{difference.local ?? (isChinese ? "此侧没有这条记录" : "Missing on this side")}</pre></section><section><span>{isChinese ? "服务器" : "Server"}</span><pre>{difference.remote ?? (isChinese ? "此侧没有这条记录" : "Missing on this side")}</pre></section></div></article>)}</section>}
+        {moreOpen && <section className="sync-destructive-actions"><p>{isChinese ? "仅影响冲突项，不可撤销：会覆盖另一版本。" : "Conflicts only. Irreversible: replaces the other version."}</p><div><button type="button" className="sync-review-overwrite" onClick={() => onResolve("prefer-local")}>{isChinese ? "保存并覆盖" : "Save & overwrite"}</button><button type="button" onClick={() => onResolve("prefer-remote")}>{isChinese ? "仅保留服务器" : "Keep server only"}</button></div></section>}
       </div>
       <footer className="sync-review-actions">
         <button type="button" className="sync-review-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button>
         <button type="button" className="sync-review-preview" onClick={() => setPreview((value) => !value)}>{preview ? (isChinese ? "收起差异" : "Hide differences") : (isChinese ? "查看差异" : "View differences")}</button>
-        <button type="button" className="sync-review-overwrite" onClick={() => onResolve("prefer-local")}>{isChinese ? "保存并覆盖" : "Save & overwrite"}</button>
-        <button type="button" onClick={() => onResolve("prefer-remote")}>{isChinese ? "保留服务器版本" : "Keep server version"}</button>
         <button type="button" className="text-button" onClick={() => onResolve("merge")}>{isChinese ? "合并数据" : "Merge data"}</button>
+        <button type="button" className="sync-review-more" aria-expanded={moreOpen} onClick={() => setMoreOpen((value) => !value)}>{moreOpen ? (isChinese ? "收起更多" : "Hide more") : (isChinese ? "更多" : "More")}</button>
         <button type="button" className="sync-review-disconnect-action" onClick={() => onResolve("disconnect-local")}>{isChinese ? "保留本地并断开" : "Keep local & disconnect"}</button>
       </footer>
     </section>
