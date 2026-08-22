@@ -43,6 +43,7 @@ import {
   X,
 } from "lucide-react";
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { adapterBaseForProviderKind, adapterGenerationPrompt, adapterPreset, configuredAdapter, parseAdapterFixture, validateAdapterConfig, type AdapterFixtureReport } from "@/adapter-config";
 import { createBrowserAdapter, generateBrowserImages, generateChatTitle, supportsNativeImageGeneration } from "@/providers";
 import { chatSearchText, chatToMarkdown, compactContext, estimatedTokens, fallbackTitle, firstText, functionCallFromText, inflateMessages, messageParts, messageText, messageUsage, savedAttachmentFromDraft, searchExcerpt, visibleMessagesAfterClear, type ContentPart, type FileAttachmentDraft, type FunctionCallRequest } from "@/chat-content";
@@ -1348,6 +1349,21 @@ If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix
   </div>;
 }
 
+function SyncReviewDisconnectAction({ label, onDisconnect }: { label: string; onDisconnect: () => void }) {
+  const [footer, setFooter] = useState<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    const dialogs = document.querySelectorAll<HTMLElement>(".sync-review-dialog");
+    const dialog = dialogs[dialogs.length - 1];
+    setFooter(dialog?.querySelector<HTMLElement>("footer") ?? null);
+  }, []);
+
+  return footer ? createPortal(
+    <button type="button" className="sync-review-disconnect-action" onClick={onDisconnect}>{label}</button>,
+    footer,
+  ) : null;
+}
+
 function SyncReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncReviewChoice) => void }) {
   const locale = useContext(LocaleContext);
   const isChinese = locale === "zh";
@@ -2030,7 +2046,7 @@ export default function Home() {
     {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
     {installGuideOpen && <InstallDialog onClose={() => setInstallGuideOpen(false)} />}
     {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onOverwrite={overwriteRemoteSync} onClear={clearSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
-    {syncReview && <><SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={resolveSyncReview} />{syncReview.state === "ready" && <button type="button" className="sync-review-disconnect-action" onClick={() => resolveSyncReview("disconnect-local")}>{settings.language === "zh" ? "保留本地并断开" : "Keep local & disconnect"}</button>}</>}
+    {syncReview && <><SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={resolveSyncReview} />{syncReview.state === "ready" && <SyncReviewDisconnectAction label={settings.language === "zh" ? "保留本地并断开" : "Keep local & disconnect"} onDisconnect={() => resolveSyncReview("disconnect-local")} />}</>}
     {syncReconfigureNotice && <div className="modal-backdrop" onMouseDown={() => setSyncReconfigureNotice(false)}><section className="sync-review-dialog" role="alertdialog" aria-modal="true" aria-label={settings.language === "zh" ? "同步服务器已更改" : "Sync server changed"} onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{settings.language === "zh" ? "同步需要重新配置" : "Sync needs to be reconfigured"}</h2></div><button className="icon-button" type="button" onClick={() => setSyncReconfigureNotice(false)}><X /></button></header><div className="sync-review-body"><p className="sync-review-warning">{settings.language === "zh" ? "当前服务器配置已更改，请重新配置。" : "The current server configuration has changed. Please configure sync again."}</p><p>{settings.language === "zh" ? "本机数据没有被删除；重新配置后可选择加入已有同步，或新建同步并确认是否覆盖远程数据。" : "Local data was not deleted. Reconfigure to join an existing sync or create a new sync and confirm any remote overwrite."}</p></div><footer><button type="button" className="sync-review-cancel" onClick={() => setSyncReconfigureNotice(false)}>{settings.language === "zh" ? "稍后" : "Later"}</button><button type="button" className="text-button" onClick={() => { setSyncReconfigureNotice(false); setSyncConfigOpen(true); }}>{settings.language === "zh" ? "重新配置" : "Reconfigure"}</button></footer></section></div>}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;
