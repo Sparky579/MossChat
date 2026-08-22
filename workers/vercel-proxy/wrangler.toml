@@ -1,0 +1,13 @@
+name = "mosschat-vercel-proxy"
+account_id = "4fb942b0bdb041f06631d16abb781807"
+main = "src/index.ts"
+compatibility_date = "2026-08-22"
+workers_dev = false
+
+[[routes]]
+pattern = "mosschat.xyz/*"
+zone_name = "mosschat.xyz"
+
+[[routes]]
+pattern = "www.mosschat.xyz/*"
+zone_name = "mosschat.xyz"
