@@ -272,6 +272,15 @@ function settingsPayloadForSync(local: AppSettings, remote: AppSettings | undefi
   return { ...base, providers, providerOrder } as AppSettings;
 }
 
+/** A non-empty local key is a recoverable value; a remote empty string is not. */
+function hasRecoverableRemoteKeyLoss(local: AppSettings, remote: AppSettings | undefined) {
+  if (!remote) return false;
+  return Object.entries(local.providers ?? {}).some(([id, provider]) => {
+    const remoteProvider = remote.providers?.[id];
+    return Boolean(remoteProvider && providerKey(provider) && !providerKey(remoteProvider));
+  });
+}
+
 async function dataUrlFromBlob(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -634,7 +643,21 @@ export async function synchronizeWebDav({ config, data, settings, resolution = "
   const localFiles = new Set(local.records.map(recordFile));
   const tombs = Object.keys(previousIndex).filter((file) => !localFiles.has(file) && !file.startsWith("t-")).map((file) => ({ type: "tomb" as const, id: file, updatedAt: new Date().toISOString(), payload: { file } }));
   const stamped = await stampLocalRecords([...local.records, ...tombs], previousIndex, config, maximumRemoteClock);
-  const resolved = resolveRecords(stamped.records, remoteRecords, resolution);
+  let resolved = resolveRecords(stamped.records, remoteRecords, resolution);
+  const localSettingsRecord = stamped.records.find((record) => record.type === "settings");
+  const remoteSettingsPayload = remoteSettings?.type === "settings" ? remoteSettings.payload as AppSettings : undefined;
+  // A previously paired device can still have an older logical clock after a
+  // different device accidentally uploaded blank keys. Let the surviving
+  // non-empty values repair that loss instead of importing the blanks again.
+  if (config.includeKeys && localSettingsRecord?.type === "settings" && hasRecoverableRemoteKeyLoss(localSettingsRecord.payload as AppSettings, remoteSettingsPayload)) {
+    const recovered = {
+      ...localSettingsRecord,
+      clock: Math.max(maximumRemoteClock, recordClock(localSettingsRecord)) + 1,
+      deviceId: config.deviceId,
+      deviceName: config.deviceName.trim().slice(0, 80) || "This device",
+    };
+    resolved = resolved.map((record) => record.type === "settings" ? recovered : record);
+  }
   const remoteByFile = new Map(remoteRecords.map((record) => [recordFile(record), record]));
   // The selected record must win on the server even if its logical clock is older.
   // Without this payload comparison, an explicit choice could look successful
