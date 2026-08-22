@@ -929,6 +929,22 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     const models = provider.models.filter((_, itemIndex) => itemIndex !== index);
     onChange({ ...settings, providers: { ...settings.providers, [id]: { ...provider, models, model: provider.model === removed ? models[0] : provider.model } } });
   };
+  const toggleModelInMainList = (id: ProviderId, model: string) => {
+    const normalizedModel = model.trim();
+    if (!normalizedModel) return;
+    const { featured } = modelMenuGroups(settings);
+    const key = modelSettingsKey(id, normalizedModel);
+    const currentOrder = featured.map(({ providerId, model: featuredModel }) => ({ providerId, model: featuredModel }));
+    const isFeatured = currentOrder.some((item) => modelSettingsKey(item.providerId, item.model) === key);
+    onChange({
+      ...settings,
+      modelDisplayOrder: isFeatured
+        ? currentOrder.filter((item) => modelSettingsKey(item.providerId, item.model) !== key)
+        : [...currentOrder, { providerId: id, model: normalizedModel }].slice(-10),
+    });
+  };
+  const isModelInMainList = (id: ProviderId, model: string) => modelMenuGroups(settings).featured
+    .some((entry) => entry.providerId === id && entry.model === model.trim());
   const updateModelPreference = (id: ProviderId, model: string, update: (current: ModelThinkingSettings) => ModelThinkingSettings) => {
     if (!model.trim()) return;
     onChange(withModelThinking(settings, id, model, update(modelThinkingFor(settings, id, model))));
@@ -1004,7 +1020,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
               <label>Protocol<select disabled={!editing} value={provider.kind} onChange={(event) => updateProvider(id, "kind", event.target.value as ProviderKind)}><option value="openai">OpenAI compatible</option><option value="anthropic">Anthropic</option><option value="google">Google Gemini</option></select></label>
               <label>{copy.key}<input disabled={!editing} type="password" autoComplete="off" value={provider.apiKey} onChange={(event) => updateProvider(id, "apiKey", event.target.value)} placeholder="Paste your key" /></label>
               <label>{copy.baseUrl}<input disabled={!editing} value={provider.baseUrl} onChange={(event) => updateProvider(id, "baseUrl", event.target.value)} /></label>
-              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => { const optionKey = `${id}:${modelIndex}:${model}`; return <div className="provider-model-entry" ref={modelOptionsTarget === optionKey ? modelOptionsRef : undefined} key={modelIndex}><div className="provider-model-row"><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => onChange(selectProviderDefaultModel(settings, id, model))}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gemini-2.5-flash" /><button type="button" className={`provider-model-capability-toggle ${modelOptionsTarget === optionKey ? "active" : ""}`} title={settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"} aria-label={settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"} onClick={() => setModelOptionsTarget((current) => current === optionKey ? null : optionKey)}><SlidersHorizontal size={15} /></button><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>{modelOptions(id, provider, model, modelIndex)}</div>; })}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
+              <div className="provider-models"><span>{copy.defaultModel}</span>{provider.models.map((model, modelIndex) => { const optionKey = `${id}:${modelIndex}:${model}`; const inMainList = isModelInMainList(id, model); const mainListLabel = inMainList ? (settings.language === "zh" ? "从主列表移除" : "Remove from main list") : (settings.language === "zh" ? "加入主列表" : "Add to main list"); return <div className="provider-model-entry" ref={modelOptionsTarget === optionKey ? modelOptionsRef : undefined} key={modelIndex}><div className="provider-model-row"><button type="button" disabled={!editing} className={provider.model === model ? "active" : ""} title={provider.model === model ? "Selected model" : "Use this model"} onClick={() => onChange(selectProviderDefaultModel(settings, id, model))}><Check size={14} /></button><input disabled={!editing} value={model} onChange={(event) => updateModel(id, modelIndex, event.target.value)} placeholder="e.g. gpt-5.6-sol" /><button type="button" className={`provider-model-main-list-toggle ${inMainList ? "active" : ""}`} disabled={!model.trim()} title={mainListLabel} aria-label={mainListLabel} aria-pressed={inMainList} onClick={() => toggleModelInMainList(id, model)}><Pin size={14} fill={inMainList ? "currentColor" : "none"} /></button><button type="button" className={`provider-model-capability-toggle ${modelOptionsTarget === optionKey ? "active" : ""}`} title={settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"} aria-label={settings.language === "zh" ? "模型能力与思考" : "Model capabilities & thinking"} onClick={() => setModelOptionsTarget((current) => current === optionKey ? null : optionKey)}><SlidersHorizontal size={15} /></button><button type="button" disabled={!editing || provider.models.length <= 1} onClick={() => removeModel(id, modelIndex)} aria-label="Delete model"><Trash2 size={15} /></button></div>{modelOptions(id, provider, model, modelIndex)}</div>; })}<button type="button" disabled={!editing} className="add-model" onClick={() => addModel(id)}>+ Add model</button></div>
             </fieldset>;
           })}
         </>}

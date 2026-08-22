@@ -4,6 +4,10 @@
 
 Refactored shared page utilities into focused content, provider JSON, and dismiss-on-outside modules. Plain text and DOCX attachments are now extracted locally before requests while retaining the original file. Provider JSON import/export, key-free backup imports, and message persistence have safer shared paths. The feedback Worker now enforces its payload limit while streaming. Updated the production stack to Next.js 16 and removed unused browser-test dependencies.
 
+## 0.2.10
+
+API & models now includes the same compact main-list pin on every model row, with the same automatic oldest-entry replacement rule.
+
 ## 0.2.9
 
 The Model menu settings use a compact pin icon to show whether each model is in the main list. Toggling a model on when the list is full automatically removes its oldest entry.
