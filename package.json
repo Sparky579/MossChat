@@ -11,7 +11,7 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "tsc --noEmit",
     "test:adapters": "tsc --outDir /tmp/mosschat-adapter-fixture-build --module commonjs --moduleResolution node --target es2022 --skipLibCheck scripts/adapter-fixtures.ts src/adapter-config.ts src/types.ts && node /tmp/mosschat-adapter-fixture-build/scripts/adapter-fixtures.js",

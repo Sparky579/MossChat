@@ -6,7 +6,7 @@ Refactored shared page utilities into focused content, provider JSON, and dismis
 
 ## 0.2.8
 
-New installations now open on OpenAI with `gpt-5.6-sol` as the only main model-menu entry. `gpt-5.6-terra`, `gpt-5.3-codex-spark`, `gemini-3.7-flash`, and the remaining built-in models begin under Others. Provider JSON samples and the built-in Gemini default now use the updated model IDs. Existing saved provider and model-menu settings remain unchanged.
+New installations now open on OpenAI with `gpt-5.6-sol` as the only main model-menu entry. `gpt-5.6-terra`, `gpt-5.3-codex-spark`, `gemini-3.7-flash`, and the remaining built-in models begin under Others. Provider JSON samples and the built-in Gemini default now use the updated model IDs. Existing saved provider and model-menu settings remain unchanged. Production builds explicitly use Webpack to avoid an incomplete Turbopack artifact on this host.
 
 ## 0.2.7
 
