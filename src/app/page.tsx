@@ -54,6 +54,16 @@ import { useDismissOnOutside } from "@/use-dismiss-on-outside";
 
 type Locale = "en" | "zh";
 
+function firstRunGuideLocale(country?: string | null): Locale {
+  if (country?.trim().toUpperCase() === "CN") return "zh";
+  if (typeof navigator === "undefined") return "en";
+  const browserLanguages = [...(navigator.languages ?? []), navigator.language ?? ""];
+  const browserUsesChinese = browserLanguages.some((language) => language.toLocaleLowerCase().startsWith("zh"));
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const isChinaTimeZone = ["Asia/Shanghai", "Asia/Urumqi", "Asia/Chongqing", "Asia/Harbin"].includes(timeZone);
+  return browserUsesChinese && isChinaTimeZone ? "zh" : "en";
+}
+
 const StreamingMarkdown = lazy(() => import("@/components/streaming-markdown").then((module) => ({ default: module.StreamingMarkdown })));
 
 const COPY = {
@@ -336,7 +346,12 @@ function ChatMessage({ message, index, onFork, onEdit, onReload, onClear, onFunc
   </article>;
 }
 
-function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[], imageGeneration: boolean) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void }) {
+function FirstRunModelGuide({ language }: { language: Locale }) {
+  const isChinese = language === "zh";
+  return <div className="first-run-model-guide" role="status"><strong>{isChinese ? "从这里开始" : "Start here"}</strong><span>{isChinese ? <>点开模型栏，然后选择 <b>管理 API 与模型</b>。可以编辑已有渠道商、添加渠道商，或直接导入 JSON。</> : <>Open the model menu, then choose <b>Manage API &amp; models</b>. Edit a provider, add one, or import JSON.</>}</span></div>;
+}
+
+function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChange, firstRunGuideLanguage, onDismissFirstRunGuide }: { settings: AppSettings; isRunning: boolean; onSend: (text: string, attachments: DraftAttachment[], imageGeneration: boolean) => Promise<void>; onCancel: () => void; onSettingsChange: (next: AppSettings) => void; firstRunGuideLanguage: Locale | null; onDismissFirstRunGuide: () => void }) {
   const copy = useCopy();
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<DraftAttachment[]>([]);
@@ -446,8 +461,9 @@ function GeminiComposer({ settings, isRunning, onSend, onCancel, onSettingsChang
       <button type="button" className="icon-button composer-plus" aria-label="Attach files" onClick={() => fileInput.current?.click()}><Plus size={23} /></button>
       <button type="button" className={`icon-button image-generate-button ${imageGeneration ? "active" : ""}`} disabled={!imageGenerationAvailable || isRunning} aria-pressed={imageGeneration} aria-label={settings.language === "zh" ? "切换生图模式" : "Toggle image generation"} title={!imageGenerationAvailable ? (settings.language === "zh" ? "选择 GPT Image 或 Gemini Image 模型后可用" : "Select a GPT Image or Gemini Image model to use this") : (imageGeneration ? (settings.language === "zh" ? "生图模式已开启" : "Image generation is on") : (settings.language === "zh" ? "生图" : "Generate image"))} onClick={() => setImageGeneration((current) => !current)}><WandSparkles size={18} /></button>
       <textarea ref={composerInput} rows={1} value={text} placeholder={imageGeneration ? (settings.language === "zh" ? "描述你想生成或修改的图片…" : "Describe the image to create or edit…") : copy.ask} className="composer-input" enterKeyHint="enter" onChange={(event) => setText(event.target.value)} onPaste={(event) => { const images = Array.from(event.clipboardData.items).filter((item) => item.kind === "file" && item.type.startsWith("image/")).map((item) => item.getAsFile()).filter((file): file is File => Boolean(file)); if (images.length) { event.preventDefault(); addFiles(images); } }} onKeyDown={(event) => { const firstMatch = commandMatches[0]; if (firstMatch && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && commandToken !== firstMatch.value) { event.preventDefault(); completeCommand(firstMatch.value); return; } if (settings.sendWithEnter && !window.matchMedia("(max-width: 760px)").matches && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} />
-      <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""}`} ref={modelMenuRef}>
-        <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => setModelOpen((current) => !current)}><span className="model-emoji" aria-hidden="true">{providerEmoji(activeProvider)}</span><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
+      <div className={`composer-model-wrap ${text || attachments.length ? "has-draft" : ""} ${firstRunGuideLanguage ? "is-onboarding-target" : ""}`} ref={modelMenuRef}>
+        {firstRunGuideLanguage && <FirstRunModelGuide language={firstRunGuideLanguage} />}
+        <button type="button" className="model-button" title={activeProvider?.model ?? ""} onClick={() => { onDismissFirstRunGuide(); setModelOpen((current) => !current); }}><span className="model-emoji" aria-hidden="true">{providerEmoji(activeProvider)}</span><span className="model-name">{activeProvider?.model ?? "Select a model"}</span><ChevronDown size={15} /></button>
         {modelOpen && <div className="model-menu composer-model-menu"><ModelMenuOptions settings={settings} onChange={onSettingsChange} onClose={() => setModelOpen(false)} /></div>}
       </div>
       <button type="button" className={`icon-button mic-button ${listening ? "is-listening" : ""}`} aria-label="Voice input" onClick={toggleDictation}><Mic size={20} /></button>
@@ -462,7 +478,7 @@ function StarterPrompts({ onSend }: { onSend: (prompt: string) => void }) {
   return <div className="starter-prompts">{prompts.map((prompt) => <button key={prompt} type="button" onClick={() => onSend(prompt)}>{prompt}<SendHorizontal size={15} /></button>)}</div>;
 }
 
-function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSettingsChange, onFeedback, onOpenPromptSettings }: { chat: Chat; settings: AppSettings; systemPrompt: string; onSnapshot: (id: string, messages: SavedMessage[], dirtyMessageIds?: string[]) => void; onFork: (index: number) => void; onSettingsChange: (next: AppSettings) => void; onFeedback: (target: FeedbackTarget) => void; onOpenPromptSettings: () => void }) {
+function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSettingsChange, onFeedback, onOpenPromptSettings, firstRunGuideLanguage, onDismissFirstRunGuide }: { chat: Chat; settings: AppSettings; systemPrompt: string; onSnapshot: (id: string, messages: SavedMessage[], dirtyMessageIds?: string[]) => void; onFork: (index: number) => void; onSettingsChange: (next: AppSettings) => void; onFeedback: (target: FeedbackTarget) => void; onOpenPromptSettings: () => void; firstRunGuideLanguage: Locale | null; onDismissFirstRunGuide: () => void }) {
   const copy = useCopy();
   const [isRunning, setIsRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -622,7 +638,7 @@ function GeminiThread({ chat, settings, systemPrompt, onSnapshot, onFork, onSett
   };
   return <div className="thread-root">
     <div ref={viewportRef} className="thread-viewport" onScroll={(event) => { const viewport = event.currentTarget; stickToBottomRef.current = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 96; }}>{chat.messages.map((message, index) => <ChatMessage key={message.id} message={message} index={index} onFork={onFork} onEdit={edit} onReload={reload} onClear={clearConversation} onFunctionResult={submitFunctionResult} onFeedback={(target) => onFeedback({ ...target, chatTitle: chat.title })} canUndoClear={index === chat.messages.length - 1 && message.content.some((part) => (part as ContentPart).type === "clear-boundary")} onUndoClear={undoClear} />)}</div>
-    <footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} /><p>{copy.mistakes}</p></footer>
+    <footer className="thread-footer"><GeminiComposer settings={settings} isRunning={isRunning} onSend={send} onCancel={cancel} onSettingsChange={onSettingsChange} firstRunGuideLanguage={firstRunGuideLanguage} onDismissFirstRunGuide={onDismissFirstRunGuide} /><p>{copy.mistakes}</p></footer>
   </div>;
 }
 
@@ -1401,6 +1417,7 @@ export default function Home() {
   const [installed, setInstalled] = useState(false);
   const [backupOptions, setBackupOptions] = useState({ chats: true, settings: true, attachments: true });
   const [storageSafety, setStorageSafety] = useState<StorageSafetyStatus | null>(null);
+  const [firstRunGuideLanguage, setFirstRunGuideLanguage] = useState<Locale | null>(null);
   const settingsRef = useRef(settings);
   const dataRef = useRef(data);
   const activeChatIdRef = useRef(activeChatId);
@@ -1430,6 +1447,9 @@ export default function Home() {
     setLastSyncAt(loadLastSyncAt(loadedSync));
     void getStorageSafetyStatus().then(setStorageSafety).catch(() => undefined);
     void loadData().then((stored) => {
+      const isFirstRun = !stored.chats.length
+        && !stored.notebooks.length
+        && !localStorage.getItem("ai-chat.local.settings.v1");
       const initialData = stored.chats.length
         ? stored
         : (() => {
@@ -1441,6 +1461,12 @@ export default function Home() {
       setActiveChatId(initialData.chats[0]?.id ?? null);
       setActiveNotebookId(initialData.notebooks[0]?.id ?? null);
       if (!stored.chats.length) void saveChatDelta(initialData.chats[0], []);
+      if (isFirstRun) {
+        void fetch("/api/locale", { cache: "no-store" })
+          .then(async (response) => response.ok ? await response.json() as { country?: unknown } : {})
+          .then((result) => setFirstRunGuideLanguage(firstRunGuideLocale(typeof result.country === "string" ? result.country : null)))
+          .catch(() => setFirstRunGuideLanguage(firstRunGuideLocale()));
+      }
       setHydrated(true);
     });
     const settingsHandler = () => setSettingsOpen(true);
@@ -1949,7 +1975,7 @@ export default function Home() {
         const threadNotebook = chat.notebookId ? data.notebooks.find((notebook) => notebook.id === chat.notebookId) : undefined;
         const visible = !notebookViewOpen && chat.id === activeChat?.id;
         return <div className={`thread-host ${visible ? "is-active" : "is-background"}`} aria-hidden={!visible} key={chat.id}>
-          <GeminiThread chat={chat} settings={settings} systemPrompt={combinedNotebookPrompt(chat, threadNotebook, settings.systemPrompt)} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} />
+          <GeminiThread chat={chat} settings={settings} systemPrompt={combinedNotebookPrompt(chat, threadNotebook, settings.systemPrompt)} onSnapshot={handleSnapshot} onFork={forkChat} onSettingsChange={setSettings} onFeedback={setFeedbackTarget} onOpenPromptSettings={() => openPromptSettings("chat")} firstRunGuideLanguage={visible ? firstRunGuideLanguage : null} onDismissFirstRunGuide={() => setFirstRunGuideLanguage(null)} />
         </div>;
       })}</div>
     </section>
