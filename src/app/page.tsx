@@ -1383,6 +1383,7 @@ export default function Home() {
   const [storageSafety, setStorageSafety] = useState<StorageSafetyStatus | null>(null);
   const settingsRef = useRef(settings);
   const dataRef = useRef(data);
+  const activeChatIdRef = useRef(activeChatId);
   const syncRunning = useRef(false);
   const syncMenuRef = useRef<HTMLDivElement>(null);
   const mobileTopActionsRef = useRef<HTMLDivElement>(null);
@@ -1390,6 +1391,17 @@ export default function Home() {
   const autoSyncSignature = useRef("");
   const deferredInstallPrompt = useRef<InstallPromptEvent | null>(null);
   dataRef.current = data;
+  activeChatIdRef.current = activeChatId;
+
+  // Sync results only contain chats that participate in records; empty draft
+  // chats are intentionally skipped. Keep the chat the user is viewing in place
+  // when a background sync would otherwise drop it and jump to the empty state.
+  const preserveActiveChat = (nextData: AppData) => {
+    const activeId = activeChatIdRef.current;
+    if (!activeId || nextData.chats.some((chat) => chat.id === activeId)) return nextData;
+    const previous = dataRef.current.chats.find((chat) => chat.id === activeId);
+    return previous ? { ...nextData, chats: [previous, ...nextData.chats] } : nextData;
+  };
 
   useEffect(() => {
     setSettings(loadSettings());
@@ -1500,8 +1512,9 @@ export default function Home() {
     setSyncMessage("");
     try {
       const result = await replaceWebDavSync({ config: next, data: localData, settings: localSettings });
-      setData(result.data);
-      await replaceData(result.data);
+      const nextData = preserveActiveChat(result.data);
+      setData(nextData);
+      await replaceData(nextData);
       setSettings(normalizeSettings(result.settings));
       setSyncConfig(next);
       saveSyncConfig(next);
@@ -1539,8 +1552,9 @@ export default function Home() {
         setSyncMessage(settings.language === "zh" ? "已同步，新的本地改动正在排队。" : "Synced. New local changes are queued.");
         return true;
       }
-      setData(result.data);
-      await replaceData(result.data);
+      const nextData = preserveActiveChat(result.data);
+      setData(nextData);
+      await replaceData(nextData);
       setSettings(normalizeSettings(result.settings));
       setSyncStatus("done");
       setLastSyncAt(result.syncedAt);
@@ -1606,6 +1620,7 @@ export default function Home() {
     if (open) {
       setActiveChatId(null);
       setNotebookViewOpen(true);
+      if (window.matchMedia("(max-width: 760px)").matches) setSidebarOpen(false);
     }
     void saveNotebook(notebook);
     return notebook;
@@ -1674,6 +1689,7 @@ export default function Home() {
     setExpandedChatId(null);
     setAddingNotebookForChatId(null);
     setRenamingChatId(null);
+    if (window.matchMedia("(max-width: 760px)").matches) setSidebarOpen(false);
   };
 
   const toggleChatPin = (chatId: string) => {
@@ -1728,6 +1744,7 @@ export default function Home() {
     setRenamingNotebookId(null);
     setExpandedChatId(null);
     setAddingNotebookForChatId(null);
+    if (window.matchMedia("(max-width: 760px)").matches) setSidebarOpen(false);
   };
 
   const renameNotebook = (notebookId: string, title: string) => {
@@ -1877,6 +1894,7 @@ export default function Home() {
       <div className="side-section recent-section"><div className="section-label"><span>{copy.recent}</span></div>{visibleChats.slice(0, 11).map((chat) => <div className={`side-item chat-item ${activeChatId === chat.id && !notebookViewOpen ? "active" : ""}`} key={chat.id}><div className="chat-row">{renamingChatId === chat.id ? <input className="chat-title-editor" autoFocus value={chatTitleDraft} aria-label={settings.language === "zh" ? "会话标题" : "Chat title"} onChange={(event) => setChatTitleDraft(event.target.value)} onBlur={() => saveRenamedChat(chat.id)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); saveRenamedChat(chat.id); } if (event.key === "Escape") setRenamingChatId(null); }} /> : <button className="chat-select" type="button" title={chat.title} onClick={() => selectChat(chat.id)}><span className="chat-title">{chat.title}</span>{chatIsRunning(chat) && <LoaderCircle className="chat-running-indicator" size={14} aria-label={settings.language === "zh" ? "正在生成" : "Generating"} />}{chat.pinned && <Pin size={13} fill="currentColor" />}</button>}<button className="chat-more" type="button" aria-label={settings.language === "zh" ? "会话操作" : "Chat actions"} title={settings.language === "zh" ? "会话操作" : "Chat actions"} onClick={() => { setExpandedChatId((id) => id === chat.id ? null : chat.id); setAddingNotebookForChatId(null); }}><MoreHorizontal size={16} /></button></div>{expandedChatId === chat.id && <div className="chat-actions-panel"><button type="button" onClick={() => toggleChatPin(chat.id)}><Pin size={14} fill={chat.pinned ? "currentColor" : "none"} />{chat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin") : (settings.language === "zh" ? "置顶" : "Pin")}</button><button type="button" onClick={() => beginRenameChat(chat.id)}><Pencil size={14} />{settings.language === "zh" ? "重命名" : "Rename"}</button><button type="button" onClick={() => setAddingNotebookForChatId((id) => id === chat.id ? null : chat.id)}><BookOpen size={14} />{settings.language === "zh" ? "添加到 Notebook" : "Add to notebook"}</button>{addingNotebookForChatId === chat.id && <div className="action-notebook-list">{data.notebooks.map((notebook) => <button type="button" key={notebook.id} onClick={() => addChatToNotebook(chat.id, notebook.id)}>{notebook.title}</button>)}<button type="button" onClick={() => createNotebookForChat(chat.id)}><Plus size={14} />{settings.language === "zh" ? "新建 Notebook" : "New notebook"}</button></div>}<button type="button" className="danger" onClick={() => removeChat(chat.id)}><Trash2 size={14} />{settings.language === "zh" ? "删除" : "Delete"}</button></div>}</div>)}</div>
       <div className="profile-row"><div className="profile-avatar">A</div><div><strong>{copy.localWorkspace}</strong><small>{copy.browserOnly}</small></div><button className="icon-button" onClick={() => setSettingsOpen(true)} aria-label={copy.settings}><Settings size={18} /></button></div>
     </aside>
+    <div className="sidebar-backdrop" aria-hidden="true" onClick={() => setSidebarOpen(false)} />
     <section className="main-area">
       <header className="topbar">
         <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar"><Menu /></button>
@@ -1884,6 +1902,7 @@ export default function Home() {
         {(activeChat || (notebookViewOpen && activeNotebook)) && <button type="button" className="top-icon prompt-top-action desktop-top-utility" onClick={() => openPromptSettings(activeChat ? "chat" : "notebook")}><TextQuote size={17} />{settings.language === "zh" ? "Prompts" : "Prompts"}</button>}
         {!installed && <button className="top-icon pwa-install-button desktop-top-utility" type="button" title={settings.language === "zh" ? "添加 MossChat 到桌面" : "Add MossChat to desktop"} onClick={() => void installApp()}><Download size={17} />{settings.language === "zh" ? "添加到桌面" : "Add to desktop"}</button>}
         <div className="top-actions">
+          <button className="top-icon" type="button" aria-label={settings.language === "zh" ? "新建对话" : "New chat"} title={settings.language === "zh" ? "新建对话" : "New chat"} onClick={() => createChat()}><MessageSquarePlus size={17} /></button>
           {activeChat && <button className="top-icon desktop-top-utility" onClick={toggleActivePin} title={activeChat.pinned ? (settings.language === "zh" ? "取消置顶" : "Unpin chat") : (settings.language === "zh" ? "置顶会话" : "Pin chat")}><Pin size={16} fill={activeChat.pinned ? "currentColor" : "none"} />{activeChat.pinned ? (settings.language === "zh" ? "已置顶" : "Pinned") : (settings.language === "zh" ? "置顶" : "Pin")}</button>}
           <div className="sync-wrap" ref={syncMenuRef}><button type="button" className={`top-icon ${syncStatus === "syncing" ? "is-syncing" : ""}`} title={syncReady ? (settings.language === "zh" ? "同步" : "Sync") : (settings.language === "zh" ? "请先配置同步" : "Configure sync first")} onClick={() => setSyncMenuOpen((value) => !value)}><RefreshCw size={17} />{settings.language === "zh" ? "同步" : "Sync"}</button>{syncReady && <span className="sync-age" aria-live="polite">{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncStatusText}</span>}{syncMenuOpen && <div className="sync-menu"><strong className={`sync-state ${syncReady ? "is-ready" : "is-inactive"} ${syncStatus === "error" ? "error" : ""} ${syncStatus === "syncing" ? "is-syncing" : ""}`}><i />{syncStatus === "syncing" ? (settings.language === "zh" ? "正在同步" : "Syncing") : syncReady ? syncStatusText : (settings.language === "zh" ? "尚未配置同步" : "Sync is not configured")}</strong><button type="button" disabled={!syncReady || syncStatus === "syncing"} onClick={() => void runSync()}><RefreshCw size={15} />{settings.language === "zh" ? "立即同步" : "Sync now"}</button><button type="button" onClick={() => { setSyncConfigOpen(true); setSyncMenuOpen(false); }}><Settings size={15} />{settings.language === "zh" ? "配置同步" : "Configure sync"}</button>{syncMessage && <small className={syncStatus === "error" ? "error" : ""}>{syncMessage}</small>}</div>}</div>
           <div className="export-wrap desktop-top-utility"><button className="top-icon" onClick={() => setExportOpen((value) => !value)}><Upload size={17} />{copy.export}</button>{exportOpen && <div className="export-menu"><button onClick={() => exportCurrent("markdown")}>{copy.exportMd}</button><button onClick={() => exportCurrent("word")}>{copy.exportWord}</button><button onClick={() => setBackupOpen(true)}>{copy.backup}</button><label className="import-backup"><input type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBackup(file); event.currentTarget.value = ""; }} />{settings.language === "zh" ? "导入旧版 JSON 备份" : "Import legacy JSON backup"}</label></div>}</div>
