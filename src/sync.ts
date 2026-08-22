@@ -450,9 +450,21 @@ function resolveRecords(local: SyncRecord[], remote: SyncRecord[], resolution: S
   return [...selected.entries()].filter(([file]) => !removed.has(file)).map(([, record]) => record);
 }
 
+/** WebDAV can retain an older, differently encoded physical copy of a record. */
+function uniqueRecords(records: SyncRecord[]) {
+  const selected = new Map<string, SyncRecord>();
+  for (const record of records) {
+    const file = recordFile(record);
+    const current = selected.get(file);
+    if (!current || compareRecords(record, current) > 0) selected.set(file, record);
+  }
+  return [...selected.values()];
+}
+
 function assembledData(records: SyncRecord[]) {
   const chats = new Map<string, Chat>();
   const notebooks = new Map<string, Notebook>();
+  const messages = new Map<string, Map<string, { seq: number; message: SavedMessage; record: SyncRecord }>>();
   for (const record of records) {
     if (record.type === "chat") chats.set(record.id, { ...(record.payload as Omit<Chat, "messages">), messages: [] });
     if (record.type === "notebook") notebooks.set(record.id, record.payload as Notebook);
@@ -460,10 +472,17 @@ function assembledData(records: SyncRecord[]) {
   for (const record of records) {
     if (record.type !== "message") continue;
     const value = record.payload as { chatId: string; seq: number; message: SavedMessage };
-    const chat = chats.get(value.chatId);
-    if (chat) chat.messages[value.seq] = value.message;
+    if (!chats.has(value.chatId) || !value.message?.id) continue;
+    const byId = messages.get(value.chatId) ?? new Map<string, { seq: number; message: SavedMessage; record: SyncRecord }>();
+    const current = byId.get(value.message.id);
+    if (!current || compareRecords(record, current.record) > 0) byId.set(value.message.id, { seq: Number.isFinite(value.seq) ? value.seq : Number.MAX_SAFE_INTEGER, message: value.message, record });
+    messages.set(value.chatId, byId);
   }
-  for (const chat of chats.values()) chat.messages = chat.messages.filter(Boolean).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  for (const [chatId, chat] of chats) {
+    chat.messages = [...(messages.get(chatId)?.values() ?? [])]
+      .sort((left, right) => left.seq - right.seq || left.message.createdAt.localeCompare(right.message.createdAt) || left.message.id.localeCompare(right.message.id))
+      .map((entry) => entry.message);
+  }
   return { chats: [...chats.values()], notebooks: [...notebooks.values()] };
 }
 
@@ -542,7 +561,7 @@ export async function inspectWebDavSync({ config, data, settings }: { config: Sy
   if (previousServerId && initialMeta.serverId !== previousServerId) throw new Error(SYNC_CONFIGURATION_CHANGED_ERROR);
   const meta = initialMeta.serverId ? initialMeta : await ensureMeta(config);
   const key = await encryptionKey(config.passphrase, base64ToBytes(meta.salt));
-  const remoteRecords = withoutEmptyChats(await readRecords(config, key, entries.filter((file) => file.endsWith(".bin"))));
+  const remoteRecords = withoutEmptyChats(uniqueRecords(await readRecords(config, key, entries.filter((file) => file.endsWith(".bin")))));
   const remoteSummary = summarizeRecords(remoteRecords);
   const localByFile = new Map(local.records.map((record) => [recordFile(record), record]));
   const remoteByFile = new Map(remoteRecords.map((record) => [recordFile(record), record]));
@@ -629,7 +648,7 @@ export async function synchronizeWebDav({ config, data, settings, resolution = "
   const { meta, salt } = await getEncryptionMaterial(config);
   const key = await encryptionKey(config.passphrase, salt);
   const previousIndex = loadIndex(config);
-  const remoteRecords = withoutEmptyChats(await readRecords(config, key, await listFiles(config)));
+  const remoteRecords = withoutEmptyChats(uniqueRecords(await readRecords(config, key, await listFiles(config))));
   const maximumRemoteClock = Math.max(0, ...remoteRecords.map(recordClock));
   const settingsFile = recordFile({ type: "settings", id: "settings", updatedAt: "", payload: null });
   const remoteSettings = remoteRecords.find((record) => record.type === "settings");
