@@ -231,6 +231,47 @@ function safeSettings(settings: AppSettings, includeKeys: boolean) {
   return { ...rest, providers: Object.fromEntries(Object.entries(providers).map(([id, provider]) => [id, { ...provider, apiKey: includeKeys ? provider.apiKey : "" }])) } as AppSettings;
 }
 
+function providerKey(provider: unknown) {
+  const value = (provider as { apiKey?: unknown } | undefined)?.apiKey;
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * Settings are one sync record, but API keys must not behave like ordinary
+ * settings fields. A fresh browser starts with empty built-in providers; if
+ * that whole record wins a merge, it would silently erase every remote key.
+ *
+ * An empty key is therefore never an implicit deletion. On a first join the
+ * remote settings form the base. On later syncs a non-empty local key may
+ * update a remote key, while an empty local key retains the remote value.
+ */
+function settingsPayloadForSync(local: AppSettings, remote: AppSettings | undefined, includeKeys: boolean, hasPairedSettings: boolean) {
+  if (!remote) return safeSettings(local, includeKeys);
+
+  const base = hasPairedSettings ? local : remote;
+  const localProviders = local.providers ?? {};
+  const remoteProviders = remote.providers ?? {};
+  const providerIds = [...new Set([...Object.keys(remoteProviders), ...Object.keys(localProviders)])];
+  const providers = Object.fromEntries(providerIds.map((id) => {
+    const localProvider = localProviders[id];
+    const remoteProvider = remoteProviders[id];
+    const provider = { ...(hasPairedSettings ? (localProvider ?? remoteProvider) : (remoteProvider ?? localProvider)) };
+    const localKey = providerKey(localProvider);
+    const remoteKey = providerKey(remoteProvider);
+    // When keys are excluded, retain the encrypted remote value in the record
+    // rather than serializing an empty string over it. When keys are included,
+    // a non-empty value is the only implicit key update.
+    provider.apiKey = includeKeys
+      ? (hasPairedSettings ? (localKey || remoteKey) : (remoteKey || localKey))
+      : remoteKey;
+    return [id, provider];
+  }));
+  const primaryOrder = hasPairedSettings ? local.providerOrder : remote.providerOrder;
+  const secondaryOrder = hasPairedSettings ? remote.providerOrder : local.providerOrder;
+  const providerOrder = [...new Set([...(primaryOrder ?? []), ...(secondaryOrder ?? []), ...providerIds])].filter((id) => providers[id]);
+  return { ...base, providers, providerOrder } as AppSettings;
+}
+
 async function dataUrlFromBlob(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -285,7 +326,7 @@ async function compactMessage(message: SavedMessage) {
   return { message: compressed ? { ...message, attachments } : message, compressed };
 }
 
-async function recordsFor(data: AppData, settings: AppSettings, includeKeys: boolean) {
+async function recordsFor(data: AppData, settings: AppSettings, includeKeys: boolean, settingsPayload = safeSettings(settings, includeKeys)) {
   const records: SyncRecord[] = [];
   let compressedImages = 0;
   for (const chat of data.chats) {
@@ -301,7 +342,7 @@ async function recordsFor(data: AppData, settings: AppSettings, includeKeys: boo
     }
   }
   for (const notebook of data.notebooks) records.push({ type: "notebook", id: notebook.id, updatedAt: notebook.updatedAt, payload: notebook });
-  records.push({ type: "settings", id: "settings", updatedAt: new Date().toISOString(), payload: safeSettings(settings, includeKeys) });
+  records.push({ type: "settings", id: "settings", updatedAt: new Date().toISOString(), payload: settingsPayload });
   return { records, compressedImages };
 }
 
@@ -581,7 +622,15 @@ export async function synchronizeWebDav({ config, data, settings, resolution = "
   const previousIndex = loadIndex(config);
   const remoteRecords = withoutEmptyChats(await readRecords(config, key, await listFiles(config)));
   const maximumRemoteClock = Math.max(0, ...remoteRecords.map(recordClock));
-  const local = await recordsFor(data, settings, config.includeKeys);
+  const settingsFile = recordFile({ type: "settings", id: "settings", updatedAt: "", payload: null });
+  const remoteSettings = remoteRecords.find((record) => record.type === "settings");
+  const hasPairedSettings = Boolean(previousIndex[settingsFile]);
+  const local = await recordsFor(
+    data,
+    settings,
+    config.includeKeys,
+    settingsPayloadForSync(settings, remoteSettings?.type === "settings" ? remoteSettings.payload as AppSettings : undefined, config.includeKeys, hasPairedSettings),
+  );
   const localFiles = new Set(local.records.map(recordFile));
   const tombs = Object.keys(previousIndex).filter((file) => !localFiles.has(file) && !file.startsWith("t-")).map((file) => ({ type: "tomb" as const, id: file, updatedAt: new Date().toISOString(), payload: { file } }));
   const stamped = await stampLocalRecords([...local.records, ...tombs], previousIndex, config, maximumRemoteClock);
