@@ -218,9 +218,9 @@ const PROVIDER_PRESETS = {
 
 /** Portable samples for the Add by JSON dialog. Keys are deliberately blank. */
 const PROVIDER_JSON_EXAMPLES = {
-  openai: { label: "OpenAI", value: { name: "OpenAI", emoji: "✨", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini", "gpt-image-2"] } },
+  openai: { label: "OpenAI", value: { name: "OpenAI", emoji: "✨", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-5.6-sol", models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.3-codex-spark"] } },
   anthropic: { label: "Anthropic", value: { name: "Anthropic", emoji: "🧠", kind: "anthropic", apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", models: ["claude-sonnet-4-20250514"] } },
-  google: { label: "Gemini", value: { name: "Google Gemini", emoji: "✨", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"] } },
+  google: { label: "Gemini", value: { name: "Google Gemini", emoji: "✨", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-3.7-flash", models: ["gemini-3.7-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"] } },
 } as const;
 
 type ProviderPresetId = keyof typeof PROVIDER_PRESETS;

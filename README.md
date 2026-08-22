@@ -13,7 +13,7 @@ Browser based chat client for your own model API keys. Keys, chats, files, and s
 </p>
 
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-198754.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.7-198754.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.8-198754.svg)](CHANGELOG.md)
 [![Next.js](https://img.shields.io/badge/Next.js-16-111111.svg)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6.svg)](https://www.typescriptlang.org/)
 
@@ -67,8 +67,8 @@ In **Settings → API & models → Add by JSON**, use the OpenAI, Anthropic, or 
     "kind": "openai",
     "apiKey": "",
     "baseUrl": "https://api.openai.com/v1",
-    "model": "gpt-4o-mini",
-    "models": ["gpt-4o-mini", "gpt-image-2"]
+    "model": "gpt-5.6-sol",
+    "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.3-codex-spark"]
   },
   {
     "name": "Anthropic",
@@ -85,8 +85,8 @@ In **Settings → API & models → Add by JSON**, use the OpenAI, Anthropic, or 
     "kind": "google",
     "apiKey": "",
     "baseUrl": "https://generativelanguage.googleapis.com",
-    "model": "gemini-2.5-flash",
-    "models": ["gemini-2.5-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"]
+    "model": "gemini-3.7-flash",
+    "models": ["gemini-3.7-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"]
   }
 ]
 ```

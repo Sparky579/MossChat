@@ -92,28 +92,26 @@ class AiChatDatabase extends Dexie {
 export const db = new AiChatDatabase();
 
 const baseProviders: Record<string, ProviderSettings> = {
-  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-2.5-flash", models: ["gemini-2.5-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"], emoji: "🤖" },
-  openai: { name: "OpenAI compatible", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", models: ["gpt-4o-mini", "gpt-image-2"], emoji: "🤖" },
+  openai: { name: "OpenAI", kind: "openai", apiKey: "", baseUrl: "https://api.openai.com/v1", model: "gpt-5.6-sol", models: ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.3-codex-spark"], emoji: "🤖" },
+  google: { name: "Google Gemini", kind: "google", apiKey: "", baseUrl: "https://generativelanguage.googleapis.com", model: "gemini-3.7-flash", models: ["gemini-3.7-flash", "gemini-3.1-flash-image", "gemini-3-pro-image"], emoji: "🤖" },
   anthropic: { name: "Anthropic", kind: "anthropic", apiKey: "", baseUrl: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", models: ["claude-sonnet-4-20250514"], emoji: "🤖" },
 };
 
 export const defaultSettings: AppSettings = {
-  activeProvider: "google",
+  activeProvider: "openai",
   providers: baseProviders,
-  providerOrder: ["google", "openai", "anthropic"],
+  providerOrder: ["openai", "google", "anthropic"],
   systemPrompt: "",
   promptPresets: [],
   namingModel: "",
-  namingProvider: "google",
+  namingProvider: "openai",
   language: "en",
   theme: "system",
   sendWithEnter: true,
   thinkingLevel: "off",
   thinkingBudget: 2048,
   modelDisplayOrder: [
-    { providerId: "google", model: baseProviders.google.model },
     { providerId: "openai", model: baseProviders.openai.model },
-    { providerId: "anthropic", model: baseProviders.anthropic.model },
   ],
   modelThinking: {},
   nativeTools: { functionDeclarations: "[]" },
@@ -131,10 +129,9 @@ function inferProvider(id: string, input?: Partial<ProviderSettings> & { modelEm
   const { modelEmojis: legacyModelEmojis, adapter: rawAdapter, modelAdapters: rawModelAdapters, ...providerInput } = input ?? {};
   const kind: ProviderKind = input?.kind ?? (id === "anthropic" ? "anthropic" : id === "google" ? "google" : "openai");
   const fallback = baseProviders[id] ?? (kind === "anthropic" ? baseProviders.anthropic : kind === "google" ? baseProviders.google : baseProviders.openai);
-  // Upgrade the app-owned OpenAI/Gemini entries with current native image models
-  // without adding guesses to a user-created compatible endpoint.
-  const builtInModels = id === "google" || id === "openai" ? fallback.models : [];
-  const models = [...new Set([...(Array.isArray(input?.models) ? input.models : []), input?.model?.trim() || fallback.model, ...builtInModels].map((model) => model.trim()).filter(Boolean))];
+  // Stored model lists are user data. Only a clean installation receives the
+  // built-in catalogue, so updating defaults never adds or reorders models here.
+  const models = [...new Set([...(Array.isArray(input?.models) ? input.models : []), input?.model?.trim() || fallback.model].map((model) => model.trim()).filter(Boolean))];
   const selectedModel = models.includes(input?.model?.trim() ?? "") ? input!.model!.trim() : models[0] ?? fallback.model;
   const legacyEmoji = Array.isArray(legacyModelEmojis) && typeof legacyModelEmojis[0] === "string" ? legacyModelEmojis[0] : "";
   const emoji = typeof providerInput.emoji === "string" && providerInput.emoji.trim() ? providerInput.emoji.trim().slice(0, 16) : legacyEmoji.trim().slice(0, 16) || "🤖";
@@ -189,8 +186,8 @@ function hasNativeImageGeneration(provider: ProviderSettings | undefined, model:
   return false;
 }
 
-function normalizeModelDisplayOrder(value: unknown, available: ModelDisplayItem[]): ModelDisplayItem[] {
-  if (!Array.isArray(value)) return available.slice(0, 10);
+function normalizeModelDisplayOrder(value: unknown, available: ModelDisplayItem[], fallback: ModelDisplayItem[] = available.slice(0, 10)): ModelDisplayItem[] {
+  if (!Array.isArray(value)) return fallback;
   const valid = new Map(available.map((item) => [modelSettingsKey(item.providerId, item.model), item]));
   const seen = new Set<string>();
   return value.flatMap((item) => {
@@ -223,6 +220,7 @@ function normalizeModelThinking(value: unknown, available: ModelDisplayItem[], f
 }
 
 export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
+  const hasStoredSettings = Boolean(input && Object.keys(input).length);
   const rawProviders = input?.providers ?? {};
   const providers = Object.fromEntries(Object.entries(rawProviders).map(([id, value]) => [id, inferProvider(id, value)]));
   const deletedProviderIds = [...new Set(Array.isArray(input?.deletedProviderIds) ? input!.deletedProviderIds!.filter((id): id is string => typeof id === "string" && Boolean(id.trim())) : [])];
@@ -234,7 +232,8 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const legacyTools = input as (Partial<AppSettings> & { geminiTools?: { functionDeclarations?: string } }) | undefined;
   const legacyThinkingLevel = typeof input?.thinkingLevel === "string" && input.thinkingLevel.trim() ? input.thinkingLevel.trim() : "off";
   const availableModels = configuredModels(providers, providerOrder);
-  const modelDisplayOrder = normalizeModelDisplayOrder(input?.modelDisplayOrder, availableModels);
+  const defaultModelDisplayOrder = defaultSettings.modelDisplayOrder.filter((item) => availableModels.some((available) => modelSettingsKey(available.providerId, available.model) === modelSettingsKey(item.providerId, item.model)));
+  const modelDisplayOrder = normalizeModelDisplayOrder(input?.modelDisplayOrder, availableModels, hasStoredSettings ? availableModels.slice(0, 10) : defaultModelDisplayOrder);
   const modelThinking = normalizeModelThinking(input?.modelThinking, availableModels, legacyThinkingLevel, providers);
   const activeModel = providers[activeProvider]?.model;
   const activeThinkingLevel = activeModel ? modelThinking[modelSettingsKey(activeProvider, activeModel)]?.defaultThinkingLevel : legacyThinkingLevel;
