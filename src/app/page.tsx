@@ -978,7 +978,7 @@ function SettingsDialog({ settings, safety, onChange, onClose, onRequestPersiste
     const providerOrder = settings.providerOrder.filter((item) => item !== id);
     const providers = { ...settings.providers };
     delete providers[id];
-    onChange({ ...settings, providers, providerOrder, activeProvider: settings.activeProvider === id ? providerOrder[0] : settings.activeProvider, namingProvider: settings.namingProvider === id ? providerOrder[0] : settings.namingProvider });
+    onChange({ ...settings, providers, providerOrder, activeProvider: settings.activeProvider === id ? providerOrder[0] : settings.activeProvider, namingProvider: settings.namingProvider === id ? providerOrder[0] : settings.namingProvider, deletedProviderIds: [...new Set([...(settings.deletedProviderIds ?? []), id])] });
   };
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="settings-dialog" role="dialog" aria-modal="true" aria-label={copy.settings} onMouseDown={(event) => event.stopPropagation()}>
     <header><div><MossMark className="app-mark settings-mark" /><h2>{copy.settings}</h2></div><div className="settings-header-actions"><label>{settings.language === "zh" ? "语言" : "Language"}<select value={settings.language} aria-label={settings.language === "zh" ? "语言" : "Language"} onChange={(event) => onChange({ ...settings, language: event.target.value as Locale })}><option value="en">English</option><option value="zh">中文</option></select></label><button className="icon-button" onClick={onClose} aria-label={copy.done}><X /></button></div></header>

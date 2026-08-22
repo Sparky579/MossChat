@@ -139,6 +139,8 @@ export type AppSettings = {
   nativeTools: {
     functionDeclarations: string;
   };
+  /** Provider IDs explicitly deleted by the user; excluded from every synced device. */
+  deletedProviderIds: string[];
 };
 
 export type SavedPart = Record<string, unknown>;

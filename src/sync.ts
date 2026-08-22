@@ -251,7 +251,9 @@ function settingsPayloadForSync(local: AppSettings, remote: AppSettings | undefi
   const base = hasPairedSettings ? local : remote;
   const localProviders = local.providers ?? {};
   const remoteProviders = remote.providers ?? {};
-  const providerIds = [...new Set([...Object.keys(remoteProviders), ...Object.keys(localProviders)])];
+  const deletedProviderIds = [...new Set([...(local.deletedProviderIds ?? []), ...(remote.deletedProviderIds ?? [])])];
+  const deleted = new Set(deletedProviderIds);
+  const providerIds = [...new Set([...Object.keys(remoteProviders), ...Object.keys(localProviders)])].filter((id) => !deleted.has(id));
   const providers = Object.fromEntries(providerIds.map((id) => {
     const localProvider = localProviders[id];
     const remoteProvider = remoteProviders[id];
@@ -269,7 +271,7 @@ function settingsPayloadForSync(local: AppSettings, remote: AppSettings | undefi
   const primaryOrder = hasPairedSettings ? local.providerOrder : remote.providerOrder;
   const secondaryOrder = hasPairedSettings ? remote.providerOrder : local.providerOrder;
   const providerOrder = [...new Set([...(primaryOrder ?? []), ...(secondaryOrder ?? []), ...providerIds])].filter((id) => providers[id]);
-  return { ...base, providers, providerOrder } as AppSettings;
+  return { ...base, providers, providerOrder, deletedProviderIds } as AppSettings;
 }
 
 /** A non-empty local key is a recoverable value; a remote empty string is not. */

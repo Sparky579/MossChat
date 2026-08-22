@@ -117,6 +117,7 @@ export const defaultSettings: AppSettings = {
   ],
   modelThinking: {},
   nativeTools: { functionDeclarations: "[]" },
+  deletedProviderIds: [],
 };
 
 export const emptyData = (): AppData => ({ chats: [], notebooks: [] });
@@ -224,7 +225,9 @@ function normalizeModelThinking(value: unknown, available: ModelDisplayItem[], f
 export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
   const rawProviders = input?.providers ?? {};
   const providers = Object.fromEntries(Object.entries(rawProviders).map(([id, value]) => [id, inferProvider(id, value)]));
-  if (!Object.keys(providers).length) Object.assign(providers, baseProviders);
+  const deletedProviderIds = [...new Set(Array.isArray(input?.deletedProviderIds) ? input!.deletedProviderIds!.filter((id): id is string => typeof id === "string" && Boolean(id.trim())) : [])];
+  for (const id of deletedProviderIds) delete providers[id];
+  if (!Object.keys(providers).length && !deletedProviderIds.length) Object.assign(providers, baseProviders);
   const providerOrder = [...new Set([...(input?.providerOrder ?? []), ...Object.keys(providers)])].filter((id) => providers[id]);
   const activeProvider = providers[input?.activeProvider ?? ""] ? input!.activeProvider! : providerOrder[0];
   const namingProvider = providers[input?.namingProvider ?? ""] ? input!.namingProvider! : activeProvider;
@@ -248,6 +251,7 @@ export function normalizeSettings(input?: Partial<AppSettings>): AppSettings {
     modelDisplayOrder,
     modelThinking,
     promptPresets: Array.isArray(input?.promptPresets) ? input.promptPresets.filter((preset): preset is PromptPreset => Boolean(preset && typeof preset.id === "string" && typeof preset.title === "string" && typeof preset.content === "string")).map((preset) => ({ id: preset.id, title: preset.title.slice(0, 80), content: preset.content })) : [],
+    deletedProviderIds,
   };
 }
 
