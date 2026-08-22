@@ -4,6 +4,10 @@
 
 Refactored shared page utilities into focused content, provider JSON, and dismiss-on-outside modules. Plain text and DOCX attachments are now extracted locally before requests while retaining the original file. Provider JSON import/export, key-free backup imports, and message persistence have safer shared paths. The feedback Worker now enforces its payload limit while streaming. Updated the production stack to Next.js 16 and removed unused browser-test dependencies.
 
+## 0.2.18
+
+The sync decision dialog now renders every choice directly in its footer. Save & overwrite replaces the ambiguous local-version label, and the action grid keeps every choice inside the dialog at narrow sizes.
+
 ## 0.2.17
 
 Keep local & disconnect is now part of the sync conflict dialog footer, so it remains visible and aligned with the other choices at every window size.

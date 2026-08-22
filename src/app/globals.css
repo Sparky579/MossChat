@@ -506,8 +506,15 @@ button:not(:disabled):active { transform: scale(.97); }
 .sync-menu .sync-import-backup { display: flex; width: 100%; min-height: 36px; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 8px; color: var(--text); cursor: pointer; font-size: 13px; }
 .sync-menu .sync-import-backup:hover { background: var(--surface-2); }
 .sync-menu .sync-import-backup input { display: none; }
-.sync-review-dialog footer > .sync-review-disconnect-action { color: #86520d; border-color: #e9cf9a; background: #fff8eb; }
+.sync-review-dialog footer.sync-review-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); justify-content: stretch; }
+.sync-review-dialog footer.sync-review-actions > button { min-width: 0; min-height: 38px; height: auto; padding: 7px 10px; line-height: 1.25; overflow-wrap: anywhere; }
+.sync-review-dialog footer > .sync-review-overwrite, .sync-review-dialog footer > .sync-review-disconnect-action { color: #86520d; border-color: #e9cf9a; background: #fff8eb; }
+.sync-review-dialog footer > .sync-review-overwrite:hover,
 .sync-review-dialog footer > .sync-review-disconnect-action:hover { background: #fff1d8; }
+
+@media (max-width: 520px) {
+  .sync-review-dialog footer.sync-review-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 @media (max-width: 760px) {
   .adapter-dialog { width: min(100%, calc(100vw - 20px)); max-height: calc(100dvh - 20px); }

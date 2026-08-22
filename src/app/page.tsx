@@ -43,7 +43,6 @@ import {
   X,
 } from "lucide-react";
 import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
 import { adapterBaseForProviderKind, adapterGenerationPrompt, adapterPreset, configuredAdapter, parseAdapterFixture, validateAdapterConfig, type AdapterFixtureReport } from "@/adapter-config";
 import { createBrowserAdapter, generateBrowserImages, generateChatTitle, supportsNativeImageGeneration } from "@/providers";
 import { chatSearchText, chatToMarkdown, compactContext, estimatedTokens, fallbackTitle, firstText, functionCallFromText, inflateMessages, messageParts, messageText, messageUsage, savedAttachmentFromDraft, searchExcerpt, visibleMessagesAfterClear, type ContentPart, type FileAttachmentDraft, type FunctionCallRequest } from "@/chat-content";
@@ -1349,22 +1348,7 @@ If any check is false, do not print SYNC_CONFIG. Fix it first. If you cannot fix
   </div>;
 }
 
-function SyncReviewDisconnectAction({ label, onDisconnect }: { label: string; onDisconnect: () => void }) {
-  const [footer, setFooter] = useState<HTMLElement | null>(null);
-
-  useLayoutEffect(() => {
-    const dialogs = document.querySelectorAll<HTMLElement>(".sync-review-dialog");
-    const dialog = dialogs[dialogs.length - 1];
-    setFooter(dialog?.querySelector<HTMLElement>("footer") ?? null);
-  }, []);
-
-  return footer ? createPortal(
-    <button type="button" className="sync-review-disconnect-action" onClick={onDisconnect}>{label}</button>,
-    footer,
-  ) : null;
-}
-
-function SyncReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncReviewChoice) => void }) {
+function LegacySyncReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncReviewChoice) => void }) {
   const locale = useContext(LocaleContext);
   const isChinese = locale === "zh";
   const [preview, setPreview] = useState(false);
@@ -1378,6 +1362,44 @@ function SyncReviewDialog({ inspection, onClose, onResolve }: { inspection: Sync
   if (inspection.state === "missing-meta") return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-review-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "无法安全读取此服务器" : "This server cannot be read safely"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div className="sync-review-body"><p>{isChinese ? "服务器上已有同步记录，但缺少 MossChat 的 meta.json。为了避免用新的加密密钥覆盖已有数据，应用不会写入此服务器。" : "This server contains sync records but no MossChat meta.json. MossChat will not write to it with a new encryption key."}</p><p className="sync-review-warning">{isChinese ? "请恢复该服务器原有的 meta.json，或在确认文件可丢弃后使用一个新的空目录。" : "Restore the original meta.json, or use a new empty directory after confirming these files can be discarded."}</p></div><footer><button type="button" className="text-button" onClick={onClose}>{isChinese ? "关闭" : "Close"}</button></footer></section></div>;
   if (inspection.state === "empty") return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-review-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "这是一个空同步服务器" : "This sync server is empty"}</h2></div></header><div className="sync-review-body"><p>{isChinese ? "首次上传会创建不加密的 meta.json，其中只包含服务器 ID、盐、版本和创建时间。会话内容仍会先加密。" : "The first upload creates an unencrypted meta.json with only a server ID, salt, schema, and creation time. Conversations remain encrypted."}</p><dl className="sync-review-summary"><div><dt>{isChinese ? "本地会话" : "Local chats"}</dt><dd>{local.chats}</dd></div><div><dt>{isChinese ? "本地消息" : "Local messages"}</dt><dd>{local.messages}</dd></div><div><dt>{isChinese ? "时间范围" : "Time range"}</dt><dd>{local.range}</dd></div></dl></div><footer><button type="button" className="sync-review-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button><button type="button" className="text-button" onClick={() => onResolve("merge")}>{isChinese ? "上传本地数据" : "Upload local data"}</button></footer></section></div>;
   return <div className="modal-backdrop" onMouseDown={onClose}><section className="sync-review-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{isChinese ? "这个服务器上已有数据" : "This server already has data"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header><div className="sync-review-body"><p>{isChinese ? `服务器 ID ${serverId}${inspection.previousServerId && inspection.previousServerId !== inspection.serverId ? "，与上次同步的服务器不同。" : "。"}` : `Server ID ${serverId}${inspection.previousServerId && inspection.previousServerId !== inspection.serverId ? ", different from the last synced server." : "."}`}</p>{inspection.remoteLastWrite && <p>{isChinese ? "最后写入" : "Last write"} {new Date(inspection.remoteLastWrite.at).toLocaleString(isChinese ? "zh-CN" : "en-US")} · {inspection.remoteLastWrite.deviceName !== "Unknown device" ? inspection.remoteLastWrite.deviceName : inspection.remoteLastWrite.deviceId.slice(0, 12)}</p>}<table className="sync-review-table"><thead><tr><th></th><th>{isChinese ? "本地" : "Local"}</th><th>{isChinese ? "服务器" : "Server"}</th><th>{isChinese ? "共有" : "Shared"}</th></tr></thead><tbody><tr><th>{isChinese ? "会话" : "Chats"}</th><td>{local.chats}</td><td>{remote.chats}</td><td>{common.chats}</td></tr><tr><th>{isChinese ? "消息" : "Messages"}</th><td>{local.messages}</td><td>{remote.messages}</td><td>{common.messages}</td></tr><tr><th>{isChinese ? "时间范围" : "Time range"}</th><td>{local.range}</td><td>{remote.range}</td><td>—</td></tr></tbody></table>{inspection.differences.length > 0 && <p className="sync-review-warning">{isChinese ? `发现 ${inspection.differences.length} 条不同项。请选择处理方式，或先查看差异。` : `${inspection.differences.length} items differ. Choose how to handle them, or view the differences first.`}</p>}{preview && <section className="sync-difference-list"><strong>{isChinese ? `差异详情（${inspection.differences.length} 条）` : `Differences (${inspection.differences.length})`}</strong>{inspection.differences.map((difference) => <article key={`${difference.type}:${difference.id}`}><header><strong>{differenceLabel(difference.type)}</strong><small>{difference.id}</small></header><div><section><span>{isChinese ? "本地" : "Local"}</span><pre>{difference.local ?? (isChinese ? "此侧没有这条记录" : "Missing on this side")}</pre></section><section><span>{isChinese ? "服务器" : "Server"}</span><pre>{difference.remote ?? (isChinese ? "此侧没有这条记录" : "Missing on this side")}</pre></section></div></article>)}</section>}</div><footer><button type="button" className="sync-review-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button><button type="button" className="sync-review-preview" onClick={() => setPreview((value) => !value)}>{preview ? (isChinese ? "收起差异" : "Hide differences") : (isChinese ? "查看差异" : "View differences")}</button><button type="button" onClick={() => onResolve("prefer-local")}>{isChinese ? "保留本地版本" : "Keep local version"}</button><button type="button" onClick={() => onResolve("prefer-remote")}>{isChinese ? "保留服务器版本" : "Keep server version"}</button><button type="button" className="text-button" onClick={() => onResolve("merge")}>{isChinese ? "合并数据" : "Merge data"}</button></footer></section></div>;
+}
+
+function SyncReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncReviewChoice) => void }) {
+  if (inspection.state !== "ready") return <LegacySyncReviewDialog inspection={inspection} onClose={onClose} onResolve={onResolve} />;
+  return <SyncReadyReviewDialog inspection={inspection} onClose={onClose} onResolve={onResolve} />;
+}
+
+function SyncReadyReviewDialog({ inspection, onClose, onResolve }: { inspection: SyncInspection; onClose: () => void; onResolve: (resolution: SyncReviewChoice) => void }) {
+  const locale = useContext(LocaleContext);
+  const isChinese = locale === "zh";
+  const [preview, setPreview] = useState(false);
+  const formatRange = (first: string | null, last: string | null) => !first || !last ? "—" : `${new Intl.DateTimeFormat(isChinese ? "zh-CN" : "en-US", { year: "numeric", month: "short" }).format(new Date(first))} ${isChinese ? "至" : "to"} ${new Intl.DateTimeFormat(isChinese ? "zh-CN" : "en-US", { year: "numeric", month: "short" }).format(new Date(last))}`;
+  const summary = (value: SyncInspection["local"]) => ({ chats: value.chats.toLocaleString(), messages: value.messages.toLocaleString(), range: formatRange(value.firstUpdatedAt, value.lastUpdatedAt) });
+  const local = summary(inspection.local);
+  const remote = summary(inspection.remote);
+  const serverId = inspection.serverId ? `${inspection.serverId.slice(0, 12)}…` : "—";
+  const differenceLabel = (type: "chat" | "message" | "notebook") => type === "message" ? (isChinese ? "消息" : "Message") : type === "chat" ? (isChinese ? "会话信息" : "Chat metadata") : (isChinese ? "笔记本" : "Notebook");
+
+  return <div className="modal-backdrop" onMouseDown={onClose}>
+    <section className="sync-review-dialog" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
+      <header><div><Cloud size={20} /><h2>{isChinese ? "这个服务器上已有数据" : "This server already has data"}</h2></div><button className="icon-button" type="button" onClick={onClose}><X /></button></header>
+      <div className="sync-review-body">
+        <p>{isChinese ? `服务器 ID ${serverId}${inspection.previousServerId && inspection.previousServerId !== inspection.serverId ? "，与上次同步的服务器不同。" : "。"}` : `Server ID ${serverId}${inspection.previousServerId && inspection.previousServerId !== inspection.serverId ? ", different from the last synced server." : "."}`}</p>
+        {inspection.remoteLastWrite && <p>{isChinese ? "最后写入" : "Last write"} {new Date(inspection.remoteLastWrite.at).toLocaleString(isChinese ? "zh-CN" : "en-US")} · {inspection.remoteLastWrite.deviceName !== "Unknown device" ? inspection.remoteLastWrite.deviceName : inspection.remoteLastWrite.deviceId.slice(0, 12)}</p>}
+        <table className="sync-review-table"><thead><tr><th></th><th>{isChinese ? "本地" : "Local"}</th><th>{isChinese ? "服务器" : "Server"}</th><th>{isChinese ? "共有" : "Shared"}</th></tr></thead><tbody><tr><th>{isChinese ? "会话" : "Chats"}</th><td>{local.chats}</td><td>{remote.chats}</td><td>{inspection.common.chats.toLocaleString()}</td></tr><tr><th>{isChinese ? "消息" : "Messages"}</th><td>{local.messages}</td><td>{remote.messages}</td><td>{inspection.common.messages.toLocaleString()}</td></tr><tr><th>{isChinese ? "时间范围" : "Time range"}</th><td>{local.range}</td><td>{remote.range}</td><td>—</td></tr></tbody></table>
+        {inspection.differences.length > 0 && <p className="sync-review-warning">{isChinese ? `发现 ${inspection.differences.length} 条不同项。请选择处理方式，或先查看差异。` : `${inspection.differences.length} items differ. Choose how to handle them, or view the differences first.`}</p>}
+        {preview && <section className="sync-difference-list"><strong>{isChinese ? `差异详情（${inspection.differences.length} 条）` : `Differences (${inspection.differences.length})`}</strong>{inspection.differences.map((difference) => <article key={`${difference.type}:${difference.id}`}><header><strong>{differenceLabel(difference.type)}</strong><small>{difference.id}</small></header><div><section><span>{isChinese ? "本地" : "Local"}</span><pre>{difference.local ?? (isChinese ? "此侧没有这条记录" : "Missing on this side")}</pre></section><section><span>{isChinese ? "服务器" : "Server"}</span><pre>{difference.remote ?? (isChinese ? "此侧没有这条记录" : "Missing on this side")}</pre></section></div></article>)}</section>}
+      </div>
+      <footer className="sync-review-actions">
+        <button type="button" className="sync-review-cancel" onClick={onClose}>{isChinese ? "取消" : "Cancel"}</button>
+        <button type="button" className="sync-review-preview" onClick={() => setPreview((value) => !value)}>{preview ? (isChinese ? "收起差异" : "Hide differences") : (isChinese ? "查看差异" : "View differences")}</button>
+        <button type="button" className="sync-review-overwrite" onClick={() => onResolve("prefer-local")}>{isChinese ? "保存并覆盖" : "Save & overwrite"}</button>
+        <button type="button" onClick={() => onResolve("prefer-remote")}>{isChinese ? "保留服务器版本" : "Keep server version"}</button>
+        <button type="button" className="text-button" onClick={() => onResolve("merge")}>{isChinese ? "合并数据" : "Merge data"}</button>
+        <button type="button" className="sync-review-disconnect-action" onClick={() => onResolve("disconnect-local")}>{isChinese ? "保留本地并断开" : "Keep local & disconnect"}</button>
+      </footer>
+    </section>
+  </div>;
 }
 
 function NotebookView({ notebook, chats, onBack, onCreateChat, onOpenChat, onRename, onDelete }: { notebook: Notebook; chats: Chat[]; onBack: () => void; onCreateChat: () => void; onOpenChat: (chatId: string) => void; onRename: (title: string) => void; onDelete: () => void }) {
@@ -2046,7 +2068,7 @@ export default function Home() {
     {feedbackTarget !== undefined && <FeedbackDialog target={feedbackTarget} onClose={() => setFeedbackTarget(undefined)} />}
     {installGuideOpen && <InstallDialog onClose={() => setInstallGuideOpen(false)} />}
     {syncConfigOpen && <SyncDialog config={syncConfig} onSave={updateSyncConfig} onOverwrite={overwriteRemoteSync} onClear={clearSyncConfig} onClose={() => setSyncConfigOpen(false)} />}
-    {syncReview && <><SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={resolveSyncReview} />{syncReview.state === "ready" && <SyncReviewDisconnectAction label={settings.language === "zh" ? "保留本地并断开" : "Keep local & disconnect"} onDisconnect={() => resolveSyncReview("disconnect-local")} />}</>}
+    {syncReview && <SyncReviewDialog inspection={syncReview} onClose={() => setSyncReview(null)} onResolve={resolveSyncReview} />}
     {syncReconfigureNotice && <div className="modal-backdrop" onMouseDown={() => setSyncReconfigureNotice(false)}><section className="sync-review-dialog" role="alertdialog" aria-modal="true" aria-label={settings.language === "zh" ? "同步服务器已更改" : "Sync server changed"} onMouseDown={(event) => event.stopPropagation()}><header><div><Cloud size={20} /><h2>{settings.language === "zh" ? "同步需要重新配置" : "Sync needs to be reconfigured"}</h2></div><button className="icon-button" type="button" onClick={() => setSyncReconfigureNotice(false)}><X /></button></header><div className="sync-review-body"><p className="sync-review-warning">{settings.language === "zh" ? "当前服务器配置已更改，请重新配置。" : "The current server configuration has changed. Please configure sync again."}</p><p>{settings.language === "zh" ? "本机数据没有被删除；重新配置后可选择加入已有同步，或新建同步并确认是否覆盖远程数据。" : "Local data was not deleted. Reconfigure to join an existing sync or create a new sync and confirm any remote overwrite."}</p></div><footer><button type="button" className="sync-review-cancel" onClick={() => setSyncReconfigureNotice(false)}>{settings.language === "zh" ? "稍后" : "Later"}</button><button type="button" className="text-button" onClick={() => { setSyncReconfigureNotice(false); setSyncConfigOpen(true); }}>{settings.language === "zh" ? "重新配置" : "Reconfigure"}</button></footer></section></div>}
     {backupOpen && <div className="modal-backdrop" onMouseDown={() => setBackupOpen(false)}><section className="backup-dialog" onMouseDown={(event) => event.stopPropagation()}><header><h2>{settings.language === "zh" ? "导出 ZIP 备份" : "Export ZIP backup"}</h2><button className="icon-button" onClick={() => setBackupOpen(false)}><X /></button></header><p>{settings.language === "zh" ? "选择要写入本地 ZIP 的内容。默认包含 API 配置与密钥。" : "Choose what goes into the local ZIP. API configuration and keys are included by default."}</p><label className="toggle-row"><input type="checkbox" checked={backupOptions.chats} onChange={(event) => setBackupOptions((current) => ({ ...current, chats: event.target.checked }))} />{settings.language === "zh" ? "聊天记录" : "Chat history"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.settings} onChange={(event) => setBackupOptions((current) => ({ ...current, settings: event.target.checked }))} />{settings.language === "zh" ? "模型配置与 API" : "Model configuration & API keys"}</label><label className="toggle-row"><input type="checkbox" checked={backupOptions.attachments} onChange={(event) => setBackupOptions((current) => ({ ...current, attachments: event.target.checked }))} />{settings.language === "zh" ? "图片与文件二进制" : "Image and file binaries"}</label><footer><button className="text-button" onClick={() => void exportBackup()}>{settings.language === "zh" ? "导出 ZIP" : "Export ZIP"}</button></footer></section></div>}
   </main></LocaleContext.Provider>;
