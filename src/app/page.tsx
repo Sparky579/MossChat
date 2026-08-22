@@ -1452,8 +1452,8 @@ export default function Home() {
       // especially in private windows. Conversations and notebooks are the
       // durable workspace data that determine whether this is a first run.
       const isFirstRun = !stored.chats.length && !stored.notebooks.length;
-      const guidePending = sessionStorage.getItem(FIRST_RUN_GUIDE_PENDING_KEY) === "1";
-      if (isFirstRun) sessionStorage.setItem(FIRST_RUN_GUIDE_PENDING_KEY, "1");
+      const guidePending = localStorage.getItem(FIRST_RUN_GUIDE_PENDING_KEY) === "1";
+      if (isFirstRun) localStorage.setItem(FIRST_RUN_GUIDE_PENDING_KEY, "1");
       const initialData = stored.chats.length
         ? stored
         : (() => {
@@ -1518,7 +1518,7 @@ export default function Home() {
   const promptNotebook = activeChat?.notebookId ? data.notebooks.find((notebook) => notebook.id === activeChat.notebookId) ?? null : notebookViewOpen ? activeNotebook : null;
   const openPromptSettings = (scope: PromptScope) => { setPromptDialogScope(scope); setPromptDialogOpen(true); };
   const dismissFirstRunGuide = () => {
-    sessionStorage.removeItem(FIRST_RUN_GUIDE_PENDING_KEY);
+    localStorage.removeItem(FIRST_RUN_GUIDE_PENDING_KEY);
     setFirstRunGuideLanguage(null);
   };
   const runningChats = data.chats.filter(chatIsRunning);

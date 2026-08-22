@@ -4,6 +4,10 @@
 
 Refactored shared page utilities into focused content, provider JSON, and dismiss-on-outside modules. Plain text and DOCX attachments are now extracted locally before requests while retaining the original file. Provider JSON import/export, key-free backup imports, and message persistence have safer shared paths. The feedback Worker now enforces its payload limit while streaming. Updated the production stack to Next.js 16 and removed unused browser-test dependencies.
 
+## 0.2.14
+
+The first-run guide now keeps its pending state in an isolated localStorage key so it survives private-window and PWA page recreation until the composer model menu is opened.
+
 ## 0.2.13
 
 The first-run setup guide now survives the PWA service worker's initial page refresh and remains visible until the composer model menu is opened.
