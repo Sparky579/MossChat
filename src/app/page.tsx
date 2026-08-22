@@ -1447,9 +1447,10 @@ export default function Home() {
     setLastSyncAt(loadLastSyncAt(loadedSync));
     void getStorageSafetyStatus().then(setStorageSafety).catch(() => undefined);
     void loadData().then((stored) => {
-      const isFirstRun = !stored.chats.length
-        && !stored.notebooks.length
-        && !localStorage.getItem("ai-chat.local.settings.v1");
+      // A default settings record can be written before IndexedDB resolves,
+      // especially in private windows. Conversations and notebooks are the
+      // durable workspace data that determine whether this is a first run.
+      const isFirstRun = !stored.chats.length && !stored.notebooks.length;
       const initialData = stored.chats.length
         ? stored
         : (() => {

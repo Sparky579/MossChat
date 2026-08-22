@@ -4,6 +4,10 @@
 
 Refactored shared page utilities into focused content, provider JSON, and dismiss-on-outside modules. Plain text and DOCX attachments are now extracted locally before requests while retaining the original file. Provider JSON import/export, key-free backup imports, and message persistence have safer shared paths. The feedback Worker now enforces its payload limit while streaming. Updated the production stack to Next.js 16 and removed unused browser-test dependencies.
 
+## 0.2.12
+
+Fixed first-run guidance in private windows: an early default settings record no longer suppresses the guide when no chats or notebooks exist.
+
 ## 0.2.11
 
 First-time empty workspaces now show a small setup guide next to the composer model menu. It points to Manage API & models, where providers can be edited, added, or imported as JSON. The guide is Chinese for a China IP; without an IP country header, Chinese requires both a Chinese browser language and a China time zone.
