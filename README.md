@@ -6,6 +6,8 @@
 
 Browser based chat client for your own model API keys. Keys, chats, files, and settings stay in the browser.
 
+Special thanks to [Linux.do](https://linux.do/).
+
 <p>
   <a href="https://mosschat.xyz">Try it now</a>
   · <a href="#getting-started">Docs</a>
@@ -214,7 +216,3 @@ Bug reports, fixes, tests, and translations are welcome. Read [CONTRIBUTING.md](
 ## License
 
 MossChat is released under the [GNU Affero General Public License v3.0](LICENSE).
-
-## Thanks
-
-Special thanks to [Linux.do](https://linux.do/).
